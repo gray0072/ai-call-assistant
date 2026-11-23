@@ -15,7 +15,13 @@ sealed class AppSettings
         Converters = { new JsonStringEnumConverter() }
     };
 
+    public static readonly string DefaultRecordingsFolder = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Sound Records");
+
     public TranscriptionMode Transcription { get; set; } = TranscriptionMode.AfterRecording;
+
+    /// <summary>Where recordings and transcripts go; null means <see cref="DefaultRecordingsFolder"/>.</summary>
+    public string? RecordingsFolder { get; set; }
 
     public static AppSettings Load()
     {

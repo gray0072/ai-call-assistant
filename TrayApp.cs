@@ -5,16 +5,13 @@ namespace SoundRecord;
 
 sealed class TrayApp : ApplicationContext
 {
-    readonly string _folder = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Sound Records");
-
     readonly AppSettings _settings = AppSettings.Load();
     readonly SpeechEngine _engine = new();
     readonly SynchronizationContext _ui;
 
     readonly NotifyIcon _tray;
     readonly ToolStripMenuItem _error, _status, _start, _pause, _stop;
-    readonly ToolStripMenuItem _modeLive, _modeAfter, _modeOff;
+    readonly ToolStripMenuItem _modeLive, _modeAfter, _modeOff, _folderItem;
     readonly System.Windows.Forms.Timer _tick;
     readonly Dictionary<string, Icon> _icons = new();
 
@@ -49,6 +46,8 @@ sealed class TrayApp : ApplicationContext
         var modeMenu = new ToolStripMenuItem("Распознавание речи");
         modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeLive, _modeAfter, _modeOff });
 
+        _folderItem = new ToolStripMenuItem("Папка для записей…", null, (_, _) => PickRecordingsFolder());
+
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(new ToolStripItem[]
         {
@@ -59,6 +58,7 @@ sealed class TrayApp : ApplicationContext
             new ToolStripMenuItem("Распознать файл…", null, (_, _) => PickFileToTranscribe()),
             new ToolStripSeparator(),
             new ToolStripMenuItem("Открыть папку", null, (_, _) => OpenFolder()),
+            _folderItem,
             new ToolStripSeparator(),
             new ToolStripMenuItem("Выход", null, (_, _) => Exit())
         });
@@ -93,6 +93,8 @@ sealed class TrayApp : ApplicationContext
 
     void OnUi(Action action) => _ui.Post(_ => action(), null);
 
+    string Folder => _settings.RecordingsFolder ?? AppSettings.DefaultRecordingsFolder;
+
     // ---------- recording ----------
 
     void Start()
@@ -100,7 +102,7 @@ sealed class TrayApp : ApplicationContext
         if (_recorder != null)
             return;
 
-        var file = Path.Combine(_folder, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
+        var file = Path.Combine(Folder, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
         var mode = _settings.Transcription;
         CallTracks? tracks = null;
         LiveTranscriber? live = null;
@@ -228,10 +230,45 @@ sealed class TrayApp : ApplicationContext
         {
             Title = "Файл для распознавания",
             Filter = "Аудио|*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac|Все файлы|*.*",
-            InitialDirectory = Directory.Exists(_folder) ? _folder : null
+            InitialDirectory = Directory.Exists(Folder) ? Folder : null
         };
         if (dialog.ShowDialog() == DialogResult.OK)
             Enqueue(dialog.FileName, null, null);
+    }
+
+    void PickRecordingsFolder()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Куда сохранять записи и расшифровки",
+            UseDescriptionForTitle = true,
+            SelectedPath = Directory.Exists(Folder) ? Folder : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            ShowNewFolderButton = true
+        };
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        var folder = dialog.SelectedPath;
+        try
+        {
+            // Make sure we can actually write there before remembering it.
+            Directory.CreateDirectory(folder);
+            var probe = Path.Combine(folder, ".soundrecord-write-test");
+            File.WriteAllText(probe, "");
+            File.Delete(probe);
+        }
+        catch (Exception ex)
+        {
+            ReportError("Папка для записей", $"Нельзя писать в {folder}: {ex.Message}");
+            return;
+        }
+
+        _settings.RecordingsFolder = string.Equals(folder.TrimEnd('\\'), AppSettings.DefaultRecordingsFolder, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : folder;
+        _settings.Save();
+        _lastFile = null;
+        UpdateUi();
     }
 
     /// <summary>
@@ -331,11 +368,18 @@ sealed class TrayApp : ApplicationContext
 
     void OpenFolder()
     {
-        Directory.CreateDirectory(_folder);
-        if (_lastFile != null && File.Exists(_lastFile))
-            Process.Start("explorer.exe", $"/select,\"{_lastFile}\"");
-        else
-            Process.Start("explorer.exe", $"\"{_folder}\"");
+        try
+        {
+            Directory.CreateDirectory(Folder);
+            if (_lastFile != null && File.Exists(_lastFile))
+                Process.Start("explorer.exe", $"/select,\"{_lastFile}\"");
+            else
+                Process.Start("explorer.exe", $"\"{Folder}\"");
+        }
+        catch (Exception ex)
+        {
+            ReportError("Папка для записей", ex.Message);
+        }
     }
 
     void Exit()
@@ -379,6 +423,7 @@ sealed class TrayApp : ApplicationContext
         _modeLive.Checked = _settings.Transcription == TranscriptionMode.Live;
         _modeAfter.Checked = _settings.Transcription == TranscriptionMode.AfterRecording;
         _modeOff.Checked = _settings.Transcription == TranscriptionMode.Off;
+        _folderItem.ToolTipText = "Сейчас: " + Folder + (active ? "\nНовая папка будет использована со следующей записи." : "");
 
         // What is being processed: model download/loading has priority over the job stage.
         var work = _engineStatus ?? _jobStatus ?? (_pending > 0 ? ("Распознавание в очереди", null) : null);
