@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Lame;
@@ -5,6 +6,8 @@ using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
 namespace SoundRecord;
+
+enum AudioSource { Speakers, Microphone }
 
 /// <summary>
 /// Records the default output device (loopback — the other side of the call)
@@ -19,11 +22,13 @@ sealed class CallRecorder : IDisposable
 
     readonly List<WasapiCapture> _captures = new();
     readonly List<BufferedWaveProvider> _buffers = new();
+    readonly List<(AudioSource Kind, ISampleProvider Provider)> _sources = new();
     readonly LameMP3FileWriter _writer;
-    readonly IWaveProvider _output;
     readonly Thread _pump;
     volatile bool _running = true;
     volatile bool _paused;
+    volatile Action<AudioSource, float[], int>? _tap;
+    long _totalFrames;
 
     public string FilePath { get; }
     public IReadOnlyList<string> Warnings { get; }
@@ -31,29 +36,32 @@ sealed class CallRecorder : IDisposable
 
     /// <summary>Recorded duration, pauses excluded.</summary>
     public TimeSpan Duration => TimeSpan.FromSeconds((double)Interlocked.Read(ref _totalFrames) / SampleRate);
-    long _totalFrames;
+
+    /// <summary>
+    /// Receives exactly what goes into the file, per source, as 48 kHz mono
+    /// (the buffer is reused — copy what you need). Called on the recorder thread.
+    /// </summary>
+    public Action<AudioSource, float[], int>? Tap
+    {
+        get => _tap;
+        set => _tap = value;
+    }
 
     public CallRecorder(string filePath)
     {
         FilePath = filePath;
         var warnings = new List<string>();
 
-        var mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
-        {
-            ReadFully = true
-        };
-
-        TryAddSource(() => new WasapiLoopbackCapture(), "выход (динамики)", mixer, warnings);
-        TryAddSource(() => new WasapiCapture(), "микрофон", mixer, warnings);
+        TryAddSource(() => new WasapiLoopbackCapture(), AudioSource.Speakers, "выход (динамики)", warnings);
+        TryAddSource(() => new WasapiCapture(), AudioSource.Microphone, "микрофон", warnings);
 
         if (_captures.Count == 0)
             throw new InvalidOperationException("Не найдено ни одного аудиоустройства.\n" + string.Join("\n", warnings));
 
         Warnings = warnings;
-        _output = new SampleToWaveProvider16(mixer);
 
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-        _writer = new LameMP3FileWriter(filePath, _output.WaveFormat, BitRateKbps);
+        _writer = new LameMP3FileWriter(filePath, new WaveFormat(SampleRate, 16, Channels), BitRateKbps);
 
         foreach (var c in _captures)
             c.StartRecording();
@@ -62,7 +70,7 @@ sealed class CallRecorder : IDisposable
         _pump.Start();
     }
 
-    void TryAddSource(Func<WasapiCapture> factory, string name, MixingSampleProvider mixer, List<string> warnings)
+    void TryAddSource(Func<WasapiCapture> factory, AudioSource kind, string name, List<string> warnings)
     {
         WasapiCapture? capture = null;
         try
@@ -84,10 +92,10 @@ sealed class CallRecorder : IDisposable
             ISampleProvider sp = ToStereo(buffer.ToSampleProvider());
             if (sp.WaveFormat.SampleRate != SampleRate)
                 sp = new WdlResamplingSampleProvider(sp, SampleRate);
-            mixer.AddMixerInput(sp);
 
             _captures.Add(capture);
             _buffers.Add(buffer);
+            _sources.Add((kind, sp));
         }
         catch (Exception ex)
         {
@@ -120,8 +128,44 @@ sealed class CallRecorder : IDisposable
     {
         var clock = Stopwatch.StartNew();
         long written = 0;
-        var bytesPerFrame = _output.WaveFormat.BlockAlign;
-        var buffer = new byte[SampleRate * bytesPerFrame]; // up to 1 s per iteration
+
+        var mix = new float[SampleRate * Channels]; // up to 1 s per step
+        var source = new float[mix.Length];
+        var mono = new float[SampleRate];
+        var pcm = new byte[mix.Length * 2];
+
+        void WriteFrames(int frames)
+        {
+            int n = frames * Channels;
+            Array.Clear(mix, 0, n);
+            var tap = _tap;
+
+            foreach (var (kind, provider) in _sources)
+            {
+                int read = provider.Read(source, 0, n);
+                if (read < n)
+                    Array.Clear(source, read, n - read);
+
+                for (int i = 0; i < n; i++)
+                    mix[i] += source[i];
+
+                if (tap != null)
+                {
+                    for (int f = 0; f < frames; f++)
+                        mono[f] = (source[2 * f] + source[2 * f + 1]) * 0.5f;
+                    try { tap(kind, mono, frames); }
+                    catch (Exception ex) { AppLog.Write("Audio tap failed: " + ex); }
+                }
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                float v = Math.Clamp(mix[i], -1f, 1f);
+                BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(i * 2), (short)(v * short.MaxValue));
+            }
+            _writer.Write(pcm, 0, n * 2);
+            Interlocked.Add(ref _totalFrames, frames);
+        }
 
         while (_running)
         {
@@ -137,25 +181,19 @@ sealed class CallRecorder : IDisposable
             }
 
             // Pull audio at wall-clock pace, a bit behind real time so the buffers have data.
-            // Loopback capture delivers nothing during silence — the mixer fills the gaps with zeros.
+            // Loopback capture delivers nothing during silence — the buffers fill the gaps with zeros.
             long target = (long)((clock.Elapsed - Latency).TotalSeconds * SampleRate);
             while (target - written > 0)
             {
                 int frames = (int)Math.Min(target - written, SampleRate);
-                int bytes = _output.Read(buffer, 0, frames * bytesPerFrame);
-                _writer.Write(buffer, 0, bytes);
+                WriteFrames(frames);
                 written += frames;
-                Interlocked.Add(ref _totalFrames, frames);
             }
         }
 
         // Captures are stopped by now: flush what is still buffered (the latency tail).
         if (!_paused)
-        {
-            int tail = (int)(Latency.TotalSeconds * SampleRate) * bytesPerFrame;
-            int bytes = _output.Read(buffer, 0, Math.Min(tail, buffer.Length));
-            _writer.Write(buffer, 0, bytes);
-        }
+            WriteFrames((int)(Latency.TotalSeconds * SampleRate));
     }
 
     public void Pause() => _paused = true;

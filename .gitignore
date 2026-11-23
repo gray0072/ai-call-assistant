@@ -2,3 +2,8 @@ bin/
 obj/
 .vs/
 *.user
+
+# Created next to the exe at runtime
+models/
+settings.json
+*.log
