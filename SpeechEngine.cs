@@ -18,12 +18,12 @@ sealed class SpeechEngine : IDisposable
     public const int VadWindow = 512;
     static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(1);
     const float DiarizationThreshold = 0.4f;
-    static readonly string[] Languages = { "ru", "en" };
+    static readonly string[] Languages = { "en", "ru", "sv" };
     static readonly int Threads = Math.Max(2, Environment.ProcessorCount / 2);
 
     // Phrases Whisper is known to invent on silence or noise (it was trained on subtitled videos).
     static readonly Regex Hallucination = new(
-        @"субтитр|dimatorzok|продолжение следует|спасибо за просмотр|thanks? (you )?for watching|подписывайтесь на канал",
+        @"субтитр|dimatorzok|продолжение следует|спасибо за просмотр|thanks? (you )?for watching|подписывайтесь на канал|textning|undertexter|tack för att (du|ni) (tittade|lyssnade)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     static readonly IDisposable WhisperLog = Whisper.net.Logger.LogProvider.AddLogger((level, message) =>
@@ -132,7 +132,7 @@ sealed class SpeechEngine : IDisposable
         try
         {
             await EnsureModelsAsync();
-            StatusChanged?.Invoke("Загрузка модели распознавания…", null);
+            StatusChanged?.Invoke(Strings.Current.LoadingModel, null);
 
             var gpu = VulkanGpu.FindDiscrete();
             AppLog.Write(gpu is { } g ? $"Whisper GPU: #{g.Index} {g.Name}" : "Whisper: no discrete GPU, using CPU");
@@ -170,7 +170,7 @@ sealed class SpeechEngine : IDisposable
 
     // ---------- recognition ----------
 
-    /// <summary>Transcribes one utterance (16 kHz mono), picking Russian or English for it. Hold a lease while calling.</summary>
+    /// <summary>Transcribes one utterance (16 kHz mono), picking Russian, English or Swedish for it. Hold a lease while calling.</summary>
     public async Task<string> TranscribeAsync(float[] samples, CancellationToken ct = default)
     {
         if (samples.Length < SampleRate * 0.3)
@@ -182,7 +182,7 @@ sealed class SpeechEngine : IDisposable
         await _whisperGate.WaitAsync(ct);
         try
         {
-            var processor = _processor ?? throw new InvalidOperationException("Модель распознавания выгружена.");
+            var processor = _processor ?? throw new InvalidOperationException(Strings.Current.ModelUnloaded);
             var (language, _) = processor.DetectLanguageWithProbability(
                 audio.AsSpan(0, Math.Min(audio.Length, 30 * SampleRate)), Languages);
             processor.ChangeLanguage(string.IsNullOrEmpty(language) ? "ru" : language);

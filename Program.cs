@@ -16,20 +16,20 @@ static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             AppLog.Write("FATAL: " + e.ExceptionObject);
-            MessageBox.Show("Sound Record аварийно завершается:\n\n" + (e.ExceptionObject as Exception)?.Message +
-                            "\n\nПодробности в " + AppLog.FilePath, "Sound Record", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(Strings.Current.Fatal((e.ExceptionObject as Exception)?.Message ?? "", AppLog.FilePath),
+                "Sound Record", MessageBoxButtons.OK, MessageBoxIcon.Error);
         };
 
         var app = new TrayApp();
         Application.ThreadException += (_, e) =>
         {
             AppLog.Write("UI error: " + e.Exception);
-            app.ReportError("Внутренняя ошибка", e.Exception.Message);
+            app.ReportError(Strings.Current.ErrInternal, e.Exception.Message);
         };
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
             AppLog.Write("Background error: " + e.Exception);
-            app.PostError("Внутренняя ошибка", e.Exception.GetBaseException().Message);
+            app.PostError(Strings.Current.ErrInternal, e.Exception.GetBaseException().Message);
             e.SetObserved();
         };
 

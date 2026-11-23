@@ -60,8 +60,8 @@ static class ModelStore
                     {
                         lastPct = pct;
                         status(pct >= 0
-                                ? $"Скачивание {m.Title}: {pct}% из {total / 1048576} МБ"
-                                : $"Скачивание {m.Title}: {done / 1048576} МБ",
+                                ? Strings.Current.Downloading(m.Title, pct, total / 1048576)
+                                : Strings.Current.DownloadingNoTotal(m.Title, done / 1048576),
                             pct >= 0 ? pct / 100.0 : null);
                     }
                 }

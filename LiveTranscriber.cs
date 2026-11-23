@@ -5,7 +5,7 @@ namespace SoundRecord;
 
 /// <summary>
 /// Draft transcript written while recording. The microphone and the speakers are handled separately:
-/// microphone speech is labelled "Я", speaker output is split into speakers by voice prints.
+/// microphone speech is labelled "me", speaker output is split into speakers by voice prints.
 /// Every recognized phrase is appended to the transcript file right away.
 /// </summary>
 sealed class LiveTranscriber
@@ -15,7 +15,8 @@ sealed class LiveTranscriber
     // Each speaker keeps the voice print of their first long phrase: averaging in later phrases
     // let other voices leak in and the print drifted until it matched everyone.
     const float SpeakerThreshold = 0.78f;
-    const string Me = "Я";
+
+    readonly Strings _text = Strings.Current; // labels stay in the language the session started with
 
     sealed record Job(AudioSource Source, long StartSample, float[] Samples);
 
@@ -163,8 +164,8 @@ sealed class LiveTranscriber
         catch (Exception ex)
         {
             AppLog.Write("Live transcription unavailable: " + ex);
-            _onError("Онлайн-распознавание недоступно: " + ex.GetBaseException().Message);
-            writer.WriteLine("(распознавание недоступно: " + ex.GetBaseException().Message + ")");
+            _onError(_text.LiveUnavailable + ex.GetBaseException().Message);
+            writer.WriteLine(_text.DraftUnavailable(ex.GetBaseException().Message));
             await foreach (var _ in _jobs.Reader.ReadAllAsync()) { } // let the recorder keep going
             return;
         }
@@ -179,7 +180,7 @@ sealed class LiveTranscriber
                     if (text.Length == 0)
                         continue;
 
-                    var speaker = job.Source == AudioSource.Microphone ? Me : IdentifySpeaker(job.Samples);
+                    var speaker = job.Source == AudioSource.Microphone ? _text.Me : IdentifySpeaker(job.Samples);
                     var at = TimeSpan.FromSeconds((double)job.StartSample / SpeechEngine.SampleRate);
                     writer.WriteLine(Transcript.Line(at, speaker, text));
                 }
@@ -210,7 +211,7 @@ sealed class LiveTranscriber
 
         bool reliable = samples.Length >= 2 * SpeechEngine.SampleRate;
         if (embedding == null)
-            return _lastRemote ?? "Собеседник";
+            return _lastRemote ?? _text.OtherParty;
 
         Normalize(embedding);
         int best = -1;
@@ -234,7 +235,7 @@ sealed class LiveTranscriber
         }
         else
         {
-            name = $"Спикер {_speakers.Count + 1}";
+            name = _text.Speaker(_speakers.Count + 1);
             _speakers.Add((name, embedding));
         }
 

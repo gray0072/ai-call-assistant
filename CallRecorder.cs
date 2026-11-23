@@ -54,11 +54,11 @@ sealed class CallRecorder : IDisposable
         _onError = onError;
         var warnings = new List<string>();
 
-        TryAddSource(() => new WasapiLoopbackCapture(), AudioSource.Speakers, "выход (динамики)", warnings);
-        TryAddSource(() => new WasapiCapture(), AudioSource.Microphone, "микрофон", warnings);
+        TryAddSource(() => new WasapiLoopbackCapture(), AudioSource.Speakers, Strings.Current.SourceSpeakers, warnings);
+        TryAddSource(() => new WasapiCapture(), AudioSource.Microphone, Strings.Current.SourceMic, warnings);
 
         if (_captures.Count == 0)
-            throw new InvalidOperationException("Не найдено ни одного аудиоустройства.\n" + string.Join("\n", warnings));
+            throw new InvalidOperationException(Strings.Current.NoDevices + "\n" + string.Join("\n", warnings));
 
         Warnings = warnings;
 
@@ -94,7 +94,7 @@ sealed class CallRecorder : IDisposable
             {
                 // E.g. the headset was unplugged: this source goes silent, the rest keeps recording.
                 if (e.Exception != null && _running)
-                    _onError($"{name} перестал записываться: {e.Exception.Message}", false);
+                    _onError(Strings.Current.SourceStopped(name, e.Exception.Message), false);
             };
 
             ISampleProvider sp = ToStereo(buffer.ToSampleProvider());
@@ -108,7 +108,7 @@ sealed class CallRecorder : IDisposable
         catch (Exception ex)
         {
             capture?.Dispose();
-            warnings.Add($"Не удалось подключить {name}: {ex.Message}");
+            warnings.Add(Strings.Current.SourceFailed(name, ex.Message));
         }
     }
 
@@ -168,7 +168,7 @@ sealed class CallRecorder : IDisposable
                         // The MP3 keeps recording; only the transcription side is lost.
                         _tapFailed = true;
                         AppLog.Write("Audio tap failed: " + ex);
-                        _onError("Звук для распознавания больше не передаётся: " + ex.Message, false);
+                        _onError(Strings.Current.TapFailed + ex.Message, false);
                     }
                 }
             }
@@ -217,7 +217,7 @@ sealed class CallRecorder : IDisposable
             // E.g. the disk is full. An unhandled exception here would kill the whole app.
             AppLog.Write("Recording failed: " + ex);
             if (_running)
-                _onError("Запись остановлена: " + ex.Message, true);
+                _onError(Strings.Current.RecordingStopped + ex.Message, true);
         }
     }
 

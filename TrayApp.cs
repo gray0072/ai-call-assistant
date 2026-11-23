@@ -11,7 +11,10 @@ sealed class TrayApp : ApplicationContext
 
     readonly NotifyIcon _tray;
     readonly ToolStripMenuItem _error, _status, _start, _pause, _stop;
-    readonly ToolStripMenuItem _modeLive, _modeAfter, _modeOff, _folderItem;
+    readonly ToolStripMenuItem _modeMenu, _modeLive, _modeAfter, _modeOff;
+    readonly ToolStripMenuItem _transcribeItem, _openFolderItem, _folderItem, _exitItem;
+    readonly ToolStripMenuItem _languageMenu, _languageSystem;
+    readonly List<(string Code, ToolStripMenuItem Item)> _languageItems = new();
     readonly System.Windows.Forms.Timer _tick;
     readonly Dictionary<string, Icon> _icons = new();
 
@@ -33,20 +36,37 @@ sealed class TrayApp : ApplicationContext
 
     public TrayApp()
     {
+        Strings.Use(_settings.Language);
+
         _error = new ToolStripMenuItem { Visible = false, ForeColor = Color.Firebrick };
         _error.Click += (_, _) => OpenLogAndClearError();
         _status = new ToolStripMenuItem { Enabled = false, Visible = false };
-        _start = new ToolStripMenuItem("Начать запись", null, (_, _) => Start());
-        _pause = new ToolStripMenuItem("Пауза", null, (_, _) => TogglePause());
-        _stop = new ToolStripMenuItem("Стоп", null, (_, _) => Stop());
+        _start = new ToolStripMenuItem("", null, (_, _) => Start());
+        _pause = new ToolStripMenuItem("", null, (_, _) => TogglePause());
+        _stop = new ToolStripMenuItem("", null, (_, _) => Stop());
 
-        _modeLive = new ToolStripMenuItem("Онлайн, во время записи", null, (_, _) => SetMode(TranscriptionMode.Live));
-        _modeAfter = new ToolStripMenuItem("После записи", null, (_, _) => SetMode(TranscriptionMode.AfterRecording));
-        _modeOff = new ToolStripMenuItem("Отключено", null, (_, _) => SetMode(TranscriptionMode.Off));
-        var modeMenu = new ToolStripMenuItem("Распознавание речи");
-        modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeLive, _modeAfter, _modeOff });
+        _modeLive = new ToolStripMenuItem("", null, (_, _) => SetMode(TranscriptionMode.Live));
+        _modeAfter = new ToolStripMenuItem("", null, (_, _) => SetMode(TranscriptionMode.AfterRecording));
+        _modeOff = new ToolStripMenuItem("", null, (_, _) => SetMode(TranscriptionMode.Off));
+        _modeMenu = new ToolStripMenuItem();
+        _modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeLive, _modeAfter, _modeOff });
 
-        _folderItem = new ToolStripMenuItem("Папка для записей…", null, (_, _) => PickRecordingsFolder());
+        _transcribeItem = new ToolStripMenuItem("", null, (_, _) => PickFileToTranscribe());
+        _openFolderItem = new ToolStripMenuItem("", null, (_, _) => OpenFolder());
+        _folderItem = new ToolStripMenuItem("", null, (_, _) => PickRecordingsFolder());
+        _exitItem = new ToolStripMenuItem("", null, (_, _) => Exit());
+
+        _languageSystem = new ToolStripMenuItem("", null, (_, _) => SetLanguage(null));
+        _languageMenu = new ToolStripMenuItem();
+        _languageMenu.DropDownItems.Add(_languageSystem);
+        _languageMenu.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var (code, name) in Strings.Languages)
+        {
+            // Language names are always shown in their own language.
+            var item = new ToolStripMenuItem(name, null, (_, _) => SetLanguage(code));
+            _languageItems.Add((code, item));
+            _languageMenu.DropDownItems.Add(item);
+        }
 
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(new ToolStripItem[]
@@ -54,14 +74,16 @@ sealed class TrayApp : ApplicationContext
             _error, _status,
             _start, _pause, _stop,
             new ToolStripSeparator(),
-            modeMenu,
-            new ToolStripMenuItem("Распознать файл…", null, (_, _) => PickFileToTranscribe()),
+            _modeMenu,
+            _transcribeItem,
             new ToolStripSeparator(),
-            new ToolStripMenuItem("Открыть папку", null, (_, _) => OpenFolder()),
+            _openFolderItem,
             _folderItem,
+            _languageMenu,
             new ToolStripSeparator(),
-            new ToolStripMenuItem("Выход", null, (_, _) => Exit())
+            _exitItem
         });
+        ApplyTexts();
 
         // Creating the menu installs the WinForms synchronization context on this thread.
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
@@ -95,6 +117,38 @@ sealed class TrayApp : ApplicationContext
 
     string Folder => _settings.RecordingsFolder ?? AppSettings.DefaultRecordingsFolder;
 
+    static Strings T => Strings.Current;
+
+    void SetLanguage(string? code)
+    {
+        _settings.Language = code;
+        _settings.Save();
+        Strings.Use(code);
+        ApplyTexts();
+        UpdateUi();
+    }
+
+    /// <summary>Texts that change only with the language; state-dependent ones are set in <see cref="UpdateUi"/>.</summary>
+    void ApplyTexts()
+    {
+        _start.Text = T.StartRecording;
+        _stop.Text = T.Stop;
+        _modeMenu.Text = T.Recognition;
+        _modeLive.Text = T.ModeLive;
+        _modeAfter.Text = T.ModeAfter;
+        _modeOff.Text = T.ModeOff;
+        _transcribeItem.Text = T.TranscribeFile;
+        _openFolderItem.Text = T.OpenFolder;
+        _folderItem.Text = T.RecordingsFolder;
+        _languageMenu.Text = T.Language;
+        _languageSystem.Text = T.LanguageSystem;
+        _exitItem.Text = T.Exit;
+
+        _languageSystem.Checked = _settings.Language == null;
+        foreach (var (code, item) in _languageItems)
+            item.Checked = _settings.Language == code;
+    }
+
     // ---------- recording ----------
 
     void Start()
@@ -112,7 +166,7 @@ sealed class TrayApp : ApplicationContext
                 tracks = new CallTracks(Path.GetFileNameWithoutExtension(file));
             if (mode == TranscriptionMode.Live)
                 live = new LiveTranscriber(_engine, Path.ChangeExtension(file, ".txt"),
-                    message => OnUi(() => ReportError("Онлайн-распознавание", message)));
+                    message => OnUi(() => ReportError(T.ErrLive, message)));
 
             Action<AudioSource, float[], int>? tap = tracks == null ? null : (source, audio, count) =>
             {
@@ -126,7 +180,7 @@ sealed class TrayApp : ApplicationContext
         {
             live?.Abandon();
             tracks?.Delete();
-            ReportError("Не удалось начать запись", ex.Message);
+            ReportError(T.ErrStart, ex.Message);
             return;
         }
 
@@ -134,14 +188,14 @@ sealed class TrayApp : ApplicationContext
         _live = live;
 
         if (_recorder.Warnings.Count > 0)
-            ReportError("Запись начата частично", string.Join("\n", _recorder.Warnings));
+            ReportError(T.WarnPartialStart, string.Join("\n", _recorder.Warnings));
 
         UpdateUi();
     }
 
     void OnRecorderError(string message, bool fatal)
     {
-        ReportError("Запись", message);
+        ReportError(T.ErrRecording, message);
         if (fatal)
             Stop();
     }
@@ -177,7 +231,7 @@ sealed class TrayApp : ApplicationContext
         {
             saved = false;
             AppLog.Write("Saving recording failed: " + ex);
-            ReportError("Запись", "Не удалось сохранить файл: " + ex.Message);
+            ReportError(T.ErrRecording, T.ErrSave + ex.Message);
         }
 
         try
@@ -193,7 +247,7 @@ sealed class TrayApp : ApplicationContext
 
         _lastFile = recorder.FilePath;
         if (saved)
-            ShowBalloon("Запись сохранена", Path.GetFileName(recorder.FilePath), ToolTipIcon.Info);
+            ShowBalloon(T.RecordingSaved, Path.GetFileName(recorder.FilePath), ToolTipIcon.Info);
 
         if (live != null || (saved && _settings.Transcription == TranscriptionMode.AfterRecording))
             Enqueue(recorder.FilePath, tracks, live);
@@ -220,7 +274,7 @@ sealed class TrayApp : ApplicationContext
             return;
 
         _engine.EnsureModelsAsync().ContinueWith(
-            t => OnUi(() => ReportError("Модели распознавания", t.Exception!.GetBaseException().Message)),
+            t => OnUi(() => ReportError(T.ErrModels, t.Exception!.GetBaseException().Message)),
             TaskContinuationOptions.OnlyOnFaulted);
     }
 
@@ -228,8 +282,8 @@ sealed class TrayApp : ApplicationContext
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Файл для распознавания",
-            Filter = "Аудио|*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac|Все файлы|*.*",
+            Title = T.PickFileTitle,
+            Filter = $"{T.AudioFiles}|*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac|{T.AllFiles}|*.*",
             InitialDirectory = Directory.Exists(Folder) ? Folder : null
         };
         if (dialog.ShowDialog() == DialogResult.OK)
@@ -240,7 +294,7 @@ sealed class TrayApp : ApplicationContext
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Куда сохранять записи и расшифровки",
+            Description = T.PickFolderTitle,
             UseDescriptionForTitle = true,
             SelectedPath = Directory.Exists(Folder) ? Folder : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             ShowNewFolderButton = true
@@ -259,7 +313,7 @@ sealed class TrayApp : ApplicationContext
         }
         catch (Exception ex)
         {
-            ReportError("Папка для записей", $"Нельзя писать в {folder}: {ex.Message}");
+            ReportError(T.RecordingsFolder.TrimEnd('…'), T.ErrCannotWrite(folder, ex.Message));
             return;
         }
 
@@ -288,7 +342,7 @@ sealed class TrayApp : ApplicationContext
             {
                 if (live != null)
                 {
-                    SetJobStatus($"{name}: дописываю черновик", null);
+                    SetJobStatus($"{name}: {T.StageFinishingDraft}", null);
                     await live.CompleteAsync();
                 }
 
@@ -299,13 +353,13 @@ sealed class TrayApp : ApplicationContext
                 OnUi(() =>
                 {
                     _lastFile = transcript;
-                    ShowBalloon("Расшифровка готова", Path.GetFileName(transcript), ToolTipIcon.Info);
+                    ShowBalloon(T.TranscriptReady, Path.GetFileName(transcript), ToolTipIcon.Info);
                 });
             }
             catch (Exception ex)
             {
                 AppLog.Write($"Transcription of {name} failed: {ex}");
-                OnUi(() => ReportError("Распознавание " + name, ex.GetBaseException().Message));
+                OnUi(() => ReportError(T.ErrTranscription(name), ex.GetBaseException().Message));
             }
             finally
             {
@@ -378,14 +432,14 @@ sealed class TrayApp : ApplicationContext
         }
         catch (Exception ex)
         {
-            ReportError("Папка для записей", ex.Message);
+            ReportError(T.RecordingsFolder.TrimEnd('…'), ex.Message);
         }
     }
 
     void Exit()
     {
         if (_pending > 0 && MessageBox.Show(
-                "Расшифровка ещё не готова и будет прервана. Выйти?", "Sound Record",
+                T.ExitConfirm, "Sound Record",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
 
@@ -417,42 +471,42 @@ sealed class TrayApp : ApplicationContext
 
         _start.Enabled = !active;
         _pause.Enabled = active;
-        _pause.Text = paused ? "Продолжить" : "Пауза";
+        _pause.Text = paused ? T.Resume : T.Pause;
         _stop.Enabled = active;
 
         _modeLive.Checked = _settings.Transcription == TranscriptionMode.Live;
         _modeAfter.Checked = _settings.Transcription == TranscriptionMode.AfterRecording;
         _modeOff.Checked = _settings.Transcription == TranscriptionMode.Off;
-        _folderItem.ToolTipText = "Сейчас: " + Folder + (active ? "\nНовая папка будет использована со следующей записи." : "");
+        _folderItem.ToolTipText = T.CurrentFolder(Folder) + (active ? "\n" + T.FolderNextRecording : "");
 
         // What is being processed: model download/loading has priority over the job stage.
-        var work = _engineStatus ?? _jobStatus ?? (_pending > 0 ? ("Распознавание в очереди", null) : null);
+        var work = _engineStatus ?? _jobStatus ?? (_pending > 0 ? (T.Queued, null) : null);
         string? workText = null;
         if (work is { } w)
         {
             workText = w.Fraction is { } f ? $"{w.Text} — {f:P0}" : w.Text;
             if (_pending > 1)
-                workText += $" (ещё в очереди: {_pending - 1})";
+                workText += T.MoreQueued(_pending - 1);
         }
         _status.Visible = workText != null;
         _status.Text = workText ?? "";
 
         _error.Visible = _errorText != null;
         _error.Text = _errorText == null ? "" :
-            "⚠ " + Shorten(_errorText, 70) + (_errorCount > 1 ? $" (ошибок: {_errorCount})" : "") + " — открыть лог";
+            "⚠ " + Shorten(_errorText, 70) + (_errorCount > 1 ? T.ErrorCount(_errorCount) : "") + T.OpenLog;
         _error.ToolTipText = _errorText;
 
         string state;
         Color color;
         if (!active)
         {
-            state = "ожидание";
+            state = T.StateIdle;
             color = Color.FromArgb(140, 140, 140);
         }
         else
         {
             var d = _recorder!.Duration;
-            state = $"{(paused ? "пауза" : "запись")} {(int)d.TotalHours:00}:{d:mm\\:ss}";
+            state = $"{(paused ? T.StatePaused : T.StateRecording)} {(int)d.TotalHours:00}:{d:mm\\:ss}";
             color = paused ? Color.FromArgb(240, 170, 0) : Color.FromArgb(220, 40, 40);
         }
 
@@ -462,7 +516,7 @@ sealed class TrayApp : ApplicationContext
         if (workText != null)
             tip += "\n" + workText;
         if (_errorText != null)
-            tip += "\n⚠ ошибка — см. меню";
+            tip += "\n" + T.TipError;
         _tray.Text = Shorten(tip, 127);
 
         // The timer drives the duration counter and the spinner.

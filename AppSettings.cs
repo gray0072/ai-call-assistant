@@ -23,6 +23,9 @@ sealed class AppSettings
     /// <summary>Where recordings and transcripts go; null means <see cref="DefaultRecordingsFolder"/>.</summary>
     public string? RecordingsFolder { get; set; }
 
+    /// <summary>UI language code (ru, en, sv); null means the Windows display language.</summary>
+    public string? Language { get; set; }
+
     public static AppSettings Load()
     {
         try

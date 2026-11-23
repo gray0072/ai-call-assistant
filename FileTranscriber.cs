@@ -4,7 +4,7 @@ using NAudio.Wave.SampleProviders;
 namespace SoundRecord;
 
 /// <summary>
-/// Accurate transcription of a finished recording. With separate tracks the microphone becomes "Я"
+/// Accurate transcription of a finished recording. With separate tracks the microphone becomes "me"
 /// and only the speakers track is split into voices; a plain audio file is split into voices as a whole.
 /// </summary>
 static class FileTranscriber
@@ -12,7 +12,7 @@ static class FileTranscriber
     const double MaxGapSeconds = 1.5;   // join turns of the same speaker separated by a short pause
     const double MaxChunkSeconds = 45;
     const double MarginSeconds = 0.15;
-    const string Me = "Я";
+    const string Me = "@me"; // speaker key of the microphone track
 
     // Share of the progress bar taken by the preparation (reading, voice separation) — the rest is recognition.
     const double PrepareShare = 0.25;
@@ -25,16 +25,17 @@ static class FileTranscriber
         Action<string, double?> progress, CallTracks? tracks = null, CancellationToken ct = default)
     {
         using var lease = engine.Use();
+        var s = Strings.Current; // the transcript uses the language chosen when it started
         var outPath = Path.ChangeExtension(audioPath, ".txt");
         var tempPath = outPath + ".tmp";
 
-        progress("загрузка модели", null);
+        progress(s.StageLoadingModel, null);
         await engine.EnsureLoadedAsync();
 
-        progress("чтение записи", 0);
+        progress(s.StageReading, 0);
         var utterances = tracks != null && File.Exists(tracks.MicPath) && File.Exists(tracks.SpeakersPath)
-            ? await Task.Run(() => FromTracks(tracks, progress), ct)
-            : await Task.Run(() => FromMix(audioPath, progress), ct);
+            ? await Task.Run(() => FromTracks(tracks, progress, s), ct)
+            : await Task.Run(() => FromMix(audioPath, progress, s), ct);
 
         double total = Math.Max(1, utterances.Sum(u => u.End - u.Start));
         double done = 0;
@@ -51,7 +52,7 @@ static class FileTranscriber
         }
 
         File.Move(tempPath, outPath, overwrite: true);
-        progress("готово", 1);
+        progress(s.StageDone, 1);
         return outPath;
 
         async Task WriteAsync()
@@ -60,7 +61,7 @@ static class FileTranscriber
             foreach (var u in utterances)
             {
                 ct.ThrowIfCancellationRequested();
-                progress("распознавание", PrepareShare + (1 - PrepareShare) * done / total);
+                progress(s.StageRecognizing, PrepareShare + (1 - PrepareShare) * done / total);
                 done += u.End - u.Start;
 
                 int from = Math.Max(0, (int)((u.Start - MarginSeconds) * SpeechEngine.SampleRate));
@@ -74,55 +75,55 @@ static class FileTranscriber
 
                 // Other people are numbered in order of their first words.
                 if (!speakerNames.TryGetValue(u.Speaker, out var label))
-                    speakerNames[u.Speaker] = label = u.Speaker == Me ? Me : $"Спикер {speakerNames.Count(p => p.Key != Me) + 1}";
+                    speakerNames[u.Speaker] = label = u.Speaker == Me ? s.Me : s.Speaker(speakerNames.Count(p => p.Key != Me) + 1);
 
                 writer.WriteLine(Transcript.Line(TimeSpan.FromSeconds(u.Start), label, text));
             }
 
             if (speakerNames.Count == 0)
-                writer.WriteLine("(речь не найдена)");
+                writer.WriteLine(s.NoSpeech);
         }
     }
 
-    static List<Utterance> FromTracks(CallTracks tracks, Action<string, double?> progress)
+    static List<Utterance> FromTracks(CallTracks tracks, Action<string, double?> progress, Strings s)
     {
         var mic = LoadMono16k(tracks.MicPath);
         var speakers = LoadMono16k(tracks.SpeakersPath);
 
-        progress("поиск речи на микрофоне", 0.02);
+        progress(s.StageMicSpeech, 0.02);
         var result = SpeechEngine.DetectSpeech(mic)
-            .Select(s => new Utterance(s.Start, s.End, Me, mic))
+            .Select(x => new Utterance(x.Start, x.End, Me, mic))
             .ToList();
 
-        result.AddRange(SeparateVoices(speakers, progress));
+        result.AddRange(SeparateVoices(speakers, progress, s));
         return result.OrderBy(u => u.Start).ToList();
     }
 
-    static List<Utterance> FromMix(string audioPath, Action<string, double?> progress) =>
-        SeparateVoices(LoadMono16k(audioPath), progress);
+    static List<Utterance> FromMix(string audioPath, Action<string, double?> progress, Strings s) =>
+        SeparateVoices(LoadMono16k(audioPath), progress, s);
 
-    static List<Utterance> SeparateVoices(float[] samples, Action<string, double?> progress)
+    static List<Utterance> SeparateVoices(float[] samples, Action<string, double?> progress, Strings s)
     {
         if (samples.Length < SpeechEngine.SampleRate)
             return new();
 
-        progress("разделение голосов", 0.05);
+        progress(s.StageVoices, 0.05);
         var segments = SpeechEngine.Diarize(samples,
-            (done, total) => progress("разделение голосов", 0.05 + (PrepareShare - 0.05) * done / Math.Max(total, 1)));
+            (done, total) => progress(s.StageVoices, 0.05 + (PrepareShare - 0.05) * done / Math.Max(total, 1)));
 
         var turns = new List<(float Start, float End, int Speaker)>();
-        foreach (var s in segments.OrderBy(s => s.Start))
+        foreach (var seg in segments.OrderBy(x => x.Start))
         {
             if (turns.Count > 0)
             {
                 var last = turns[^1];
-                if (last.Speaker == s.Speaker && s.Start - last.End < MaxGapSeconds && s.End - last.Start < MaxChunkSeconds)
+                if (last.Speaker == seg.Speaker && seg.Start - last.End < MaxGapSeconds && seg.End - last.Start < MaxChunkSeconds)
                 {
-                    turns[^1] = (last.Start, Math.Max(last.End, s.End), last.Speaker);
+                    turns[^1] = (last.Start, Math.Max(last.End, seg.End), last.Speaker);
                     continue;
                 }
             }
-            turns.Add((s.Start, s.End, s.Speaker));
+            turns.Add((seg.Start, seg.End, seg.Speaker));
         }
 
         return turns.Select(t => new Utterance(t.Start, t.End, "#" + t.Speaker, samples)).ToList();
