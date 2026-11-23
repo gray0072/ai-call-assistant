@@ -41,7 +41,7 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 
 ## 4. Speech recognition
 
-### 4.1 Modes (tray menu, default Live)
+### 4.1 Modes (window top bar and tray menu, default Live; locked while recording)
 
 | Mode | Behaviour |
 |---|---|
@@ -75,10 +75,10 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 ## 5. Window
 
 - **W1.** Opens on app start, on a double-click on the tray icon, from the tray menu, and when the app is started again. Closing it never stops recording, transcription or the assistant.
-- **W2.** Top bar: project (choose an existing one or type a new name), project notes, recording state with duration and processing progress, Start / Pause / Stop.
+- **W2.** Top bar: project (choose an existing one or type a new name), project notes, project folder, recognition mode (§4.1; can't be changed while recording), recording state with duration and processing progress, Start / Pause / Stop.
 - **W3.** Participants: one row per voice of the current call — default label (in the voice's color), editable name, number of phrases. Rows appear as voices are heard.
-- **W4.** Transcript: the live draft or the accurate transcript, each speaker in its own color; stays scrolled to the end unless the user has scrolled up. If live recognition is off, a hint with a link to turn it on.
-- **W5.** Assistant panel: on/off, current source and model, Settings…, update interval, Update now, cost so far (cloud), the notes, a question box.
+- **W4.** Transcript: the live draft or the accurate transcript, each speaker in its own color; stays scrolled to the end unless the user has scrolled up. If live recognition is off, a hint says when the transcript will appear (after the call, or never with recognition off).
+- **W5.** Assistant panel: on/off, current source and model, Settings…, update interval, Update now, cost so far (cloud), the Summary pane, the Notes pane, a question box. Without live recognition everything but Settings… is disabled and a line explains that the assistant needs live recognition.
 - **W6.** The current call is the one being recorded, otherwise the last one recorded or transcribed.
 
 ## 6. Projects and participants
@@ -103,10 +103,12 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 
 ### 7.1 What it writes
 
-- **A1.** Live notes during the call, with fixed headings in the interface language: Summary (≤ 5 bullets), Suggestions (≤ 3: an answer to a question put to the user, a question worth asking, a topic not covered), Worth checking (only if something said looks factually wrong, contradictory or unclear).
-- **A2.** Answers to the user's questions about the call, in the language of the question.
-- **A3.** After the accurate transcript of a call: Summary, Decisions, Action items ("who — what — when"), Open questions.
-- **A4.** Notes stream into the window as they are generated and are appended to `<recording>.assistant.md`.
+- **A0.** The assistant works only with live recognition: with any other mode it does not run, the final summary is not written, and the controls are disabled.
+- **A1.** Each live update writes, with fixed headings in the interface language: Summary (≤ 5 bullets), Suggestions (≤ 3: an answer to a question put to the user, a question worth asking, a topic not covered), Worth checking (only if something said looks factually wrong, contradictory or unclear). Headings with nothing under them, or only "(None)" and the like, are dropped.
+- **A2.** Summary pane: one current summary. Each update is given the previous summary and replaces it with the new one; after the accurate transcript of the call it is replaced by the summary of the whole call — Summary, Decisions, Action items ("who — what — when"), Open questions — marked "whole call".
+- **A3.** Notes pane: Suggestions and Worth checking of the latest update only (cleared when the whole-call summary arrives), then the user's questions with answers, newest first, in the language of the question; answers stream in.
+- **A4.** While an update is being written the panes keep the previous text and their titles say "updating…"; titles show the time of the last update; a failed update shows its error under the summary. Every result is also appended to `<recording>.assistant.md`.
+- **A4a.** An empty answer is retried once; the log records the finish reason and how much hidden reasoning the model produced.
 
 ### 7.2 When it runs
 

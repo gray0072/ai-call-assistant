@@ -20,8 +20,8 @@ sealed class AssistantForm : Form
     readonly TrayApp _app;
 
     // top bar
-    readonly Label _projectLabel, _state;
-    readonly ComboBox _project;
+    readonly Label _projectLabel, _modeLabel, _state;
+    readonly ComboBox _project, _mode;
     readonly Button _notes, _projectFolder, _start, _pause, _stop;
 
     // participants
@@ -31,18 +31,17 @@ sealed class AssistantForm : Form
 
     // transcript
     readonly Label _transcriptTitle, _transcriptHint;
-    readonly LinkLabel _enableLive;
     readonly RichTextBox _transcript;
 
     // assistant
     readonly CheckBox _aiEnabled;
-    readonly Label _aiModel, _aiEveryLabel, _aiCost;
+    readonly Label _aiModel, _aiEveryLabel, _aiCost, _aiNeedsLive, _summaryTitle, _notesTitle;
     readonly ComboBox _aiInterval;
     readonly Button _aiSettings, _aiNow, _ask;
-    readonly RichTextBox _aiNotes;
+    readonly RichTextBox _aiSummary, _aiNotes;
     readonly TextBox _question;
 
-    readonly SplitContainer _outer, _inner;
+    readonly SplitContainer _outer, _inner, _aiSplit;
     readonly System.Windows.Forms.Timer _refresh;
 
     CallSession? _session;
@@ -50,8 +49,7 @@ sealed class AssistantForm : Form
     volatile bool _transcriptDirty, _peopleDirty, _notesDirty;
     readonly List<Utterance> _pendingLines = new();
     bool _updatingProject;
-    int _stableNotes, _stableEnd;   // notes drawn for good and where their text ends
-    CallAssistant? _notesOwner;
+    string? _summaryShown, _notesShown; // what the panes show, to redraw only on change
     Font? _italic;
 
     static Strings T => Strings.Current;
@@ -87,19 +85,24 @@ sealed class AssistantForm : Form
         _notes = Ui.Button("", (_, _) => EditProjectNotes());
         _projectFolder = Ui.Button("", (_, _) => { CommitProject(); _app.OpenProjectFolder(); });
 
+        _modeLabel = Ui.Label();
+        _modeLabel.Margin = new Padding(16, 6, 3, 6);
+        _mode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, Anchor = AnchorStyles.Left };
+        _mode.SelectionChangeCommitted += (_, _) => _app.SetMode(Modes[Math.Max(0, _mode.SelectedIndex)]);
+
         _state = Ui.Label(bold: true);
         _state.Anchor = AnchorStyles.Right;
         _start = Ui.Button("", (_, _) => _app.Start());
         _pause = Ui.Button("", (_, _) => _app.TogglePause());
         _stop = Ui.Button("", (_, _) => _app.Stop());
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 8, Padding = new Padding(8, 6, 8, 2) };
-        for (int i = 0; i < 4; i++)
+        var top = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 10, Padding = new Padding(8, 6, 8, 2) };
+        for (int i = 0; i < 6; i++)
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 3; i++)
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.Controls.AddRange(new Control[] { _projectLabel, _project, _notes, _projectFolder, _state, _start, _pause, _stop });
+        top.Controls.AddRange(new Control[] { _projectLabel, _project, _notes, _projectFolder, _modeLabel, _mode, _state, _start, _pause, _stop });
 
         // ---------- participants ----------
         _participantsTitle = Ui.Label(bold: true);
@@ -150,10 +153,7 @@ sealed class AssistantForm : Form
         _transcriptTitle = Ui.Label(bold: true);
         _transcriptHint = Ui.Label();
         _transcriptHint.ForeColor = SystemColors.GrayText;
-        _enableLive = new LinkLabel { AutoSize = true, Margin = new Padding(3, 0, 3, 6) };
-        _enableLive.LinkClicked += (_, _) => _app.SetMode(TranscriptionMode.Live);
-        var hint = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = Padding.Empty, WrapContents = true };
-        hint.Controls.AddRange(new Control[] { _transcriptHint, _enableLive });
+        _transcriptHint.MaximumSize = new Size(600, 0);
         _transcript = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -163,7 +163,7 @@ sealed class AssistantForm : Form
             DetectUrls = false,
             Font = new Font("Segoe UI", 10F)
         };
-        var transcript = Column(_transcriptTitle, hint, _transcript);
+        var transcript = Column(_transcriptTitle, _transcriptHint, _transcript);
 
         // ---------- assistant ----------
         _aiEnabled = new CheckBox { AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(3, 5, 3, 3) };
@@ -182,14 +182,17 @@ sealed class AssistantForm : Form
         _aiCost.ForeColor = SystemColors.GrayText;
         var aiControls = Flow(_aiEveryLabel, _aiInterval, _aiNow, _aiCost);
 
-        _aiNotes = new RichTextBox
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            BackColor = SystemColors.Window,
-            BorderStyle = BorderStyle.None,
-            Font = new Font("Segoe UI", 10F)
-        };
+        _aiNeedsLive = Ui.Label();
+        _aiNeedsLive.ForeColor = Color.FromArgb(160, 90, 0);
+        _aiNeedsLive.MaximumSize = new Size(520, 0);
+
+        _summaryTitle = Ui.Label(bold: true);
+        _aiSummary = NotesBox();
+        _notesTitle = Ui.Label(bold: true);
+        _aiNotes = NotesBox();
+        _aiSplit = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
+        _aiSplit.Panel1.Controls.Add(Pane(_summaryTitle, _aiSummary));
+        _aiSplit.Panel2.Controls.Add(Pane(_notesTitle, _aiNotes));
         _question = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 4, 3, 3) };
         _question.KeyDown += (_, e) =>
         {
@@ -209,12 +212,14 @@ sealed class AssistantForm : Form
         var assistant = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(4) };
         assistant.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         assistant.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        assistant.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         assistant.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         assistant.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         assistant.Controls.Add(aiHead, 0, 0);
         assistant.Controls.Add(aiControls, 0, 1);
-        assistant.Controls.Add(_aiNotes, 0, 2);
-        assistant.Controls.Add(askRow, 0, 3);
+        assistant.Controls.Add(_aiNeedsLive, 0, 2);
+        assistant.Controls.Add(_aiSplit, 0, 3);
+        assistant.Controls.Add(askRow, 0, 4);
 
         // ---------- three columns: participants | transcript | assistant ----------
         _inner = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.None };
@@ -233,6 +238,7 @@ sealed class AssistantForm : Form
         {
             _outer.SplitterDistance = Math.Max(LogicalToDeviceUnits(220), ClientSize.Width / 5);
             _inner.SplitterDistance = _inner.Width * 52 / 100;
+            _aiSplit.SplitterDistance = _aiSplit.Height * 45 / 100;
         };
 
         _refresh = new System.Windows.Forms.Timer { Interval = 150 };
@@ -265,6 +271,27 @@ sealed class AssistantForm : Form
         return panel;
     }
 
+    static readonly TranscriptionMode[] Modes = { TranscriptionMode.Live, TranscriptionMode.AfterRecording, TranscriptionMode.Off };
+
+    static RichTextBox NotesBox() => new()
+    {
+        Dock = DockStyle.Fill,
+        ReadOnly = true,
+        BackColor = SystemColors.Window,
+        BorderStyle = BorderStyle.None,
+        Font = new Font("Segoe UI", 10F)
+    };
+
+    static Control Pane(Control title, Control body)
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty };
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.Controls.Add(title, 0, 0);
+        panel.Controls.Add(body, 0, 1);
+        return panel;
+    }
+
     static FlowLayoutPanel Flow(params Control[] controls)
     {
         var flow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = Padding.Empty, WrapContents = true };
@@ -289,7 +316,10 @@ sealed class AssistantForm : Form
         _people.Columns["Name"]!.HeaderText = T.ColumnName;
         _people.Columns["Phrases"]!.HeaderText = T.ColumnPhrases;
         _transcriptTitle.Text = T.TranscriptTitle;
-        _enableLive.Text = T.EnableLive;
+        _modeLabel.Text = T.RecognitionLabel;
+        _mode.Items.Clear();
+        _mode.Items.AddRange(new object[] { T.ModeLive, T.ModeAfter, T.ModeOff });
+        _aiNeedsLive.Text = T.AiNeedsLive;
         _aiEnabled.Text = T.AiAssistant;
         _aiSettings.Text = T.AiSettingsButton;
         _aiEveryLabel.Text = T.AiRuns;
@@ -300,6 +330,7 @@ sealed class AssistantForm : Form
         _aiInterval.Items.Clear();
         _aiInterval.Items.AddRange(AssistantSettings.Intervals.Select(s => (object)T.AiInterval(s)).ToArray());
 
+        _summaryShown = _notesShown = null;
         _peopleDirty = _transcriptDirty = _notesDirty = true;
         OnAppState();
     }
@@ -345,21 +376,28 @@ sealed class AssistantForm : Form
         }
         _notes.Enabled = settings.Project != null;
 
+        // Recognition mode: chosen before a call; the assistant needs the live transcript.
         bool live = _app.Mode == TranscriptionMode.Live;
-        _transcriptHint.Text = live ? "" : T.LiveOffHint;
-        _transcriptHint.Visible = _enableLive.Visible = !live;
+        int mode = Array.IndexOf(Modes, _app.Mode);
+        if (_mode.SelectedIndex != mode)
+            _mode.SelectedIndex = mode;
+        _mode.Enabled = !recording;
+        _transcriptHint.Text = live ? "" : _app.Mode == TranscriptionMode.Off ? T.RecognitionOffHint : T.LiveOffHint;
+        _transcriptHint.Visible = !live;
+        _aiNeedsLive.Visible = !live;
 
         var a = settings.Assistant;
-        if (_aiEnabled.Checked != a.Enabled)
-            _notesDirty = true; // the hint in the empty notes depends on it
+        if (_aiEnabled.Checked != a.Enabled || _aiEnabled.Enabled != live)
+            _notesDirty = true; // the hints in the empty panes depend on it
         _aiEnabled.Checked = a.Enabled;
+        _aiEnabled.Enabled = _aiInterval.Enabled = live;
         _aiModel.Text = a.Model == null ? T.AiNoModelChosen
             : $"{(a.Provider == LlmProvider.LmStudio ? "LM Studio" : "OpenRouter")} · {a.Model}";
         int index = Array.IndexOf(AssistantSettings.Intervals, a.IntervalSeconds);
         if (_aiInterval.SelectedIndex != index && index >= 0)
             _aiInterval.SelectedIndex = index;
-        bool canAsk = _assistant != null && a.Model != null;
-        _aiNow.Enabled = _ask.Enabled = canAsk;
+        bool canAsk = live && _assistant != null && a.Model != null;
+        _aiNow.Enabled = _ask.Enabled = _question.Enabled = canAsk;
         _aiCost.Text = _assistant is { CostKnown: true } x ? T.AiCost(x.Cost) : "";
     }
 
@@ -578,75 +616,99 @@ sealed class AssistantForm : Form
     }
 
     /// <summary>
-    /// Finished notes never change, so they are drawn once; only the text after them
-    /// (the note still streaming in) is redrawn.
+    /// Two panes: the summary (one current version, replaced by each update and by the summary of the
+    /// whole call at the end) and the notes (suggestions and doubts of the latest update, then the
+    /// answers to the user's questions, newest first). While an update is being written the panes keep
+    /// the previous text and say "updating"; they are redrawn only when what they show changes.
     /// </summary>
     void RenderNotes()
     {
-        bool atBottom = Ui.IsAtBottom(_aiNotes);
-        var notes = _assistant?.Notes ?? Array.Empty<AssistantNote>();
+        var a = _assistant;
+        bool live = _app.Mode == TranscriptionMode.Live;
+        bool enabled = _app.Settings.Assistant.Enabled;
+        bool updating = a?.IsUpdating == true;
+        var (summary, summaryAt) = a?.Summary ?? (null, null);
+        var (notes, notesAt) = a?.CurrentNotes ?? (null, null);
+        var questions = a?.Questions ?? Array.Empty<AssistantNote>();
 
-        _aiNotes.SuspendLayout();
-        if (notes.Length == 0 || _stableNotes > notes.Length || _notesOwner != _assistant)
+        _summaryTitle.Text = T.AiSummaryTitle + When(summaryAt) +
+            (a?.SummaryIsFinal == true ? "  ·  " + T.AiFinalMark : "") + (updating ? "  ·  " + T.AiUpdating : "");
+        _notesTitle.Text = T.AiNotesTitle + When(notesAt) + (updating && a?.SummaryIsFinal != true ? "  ·  " + T.AiUpdating : "");
+
+        // ----- summary -----
+        string? idle = !live ? T.AiNeedsLive : !enabled ? T.AiOffHint : null;
+        var summaryKey = string.Join("\u0001", idle, summary, a?.LastError, summary == null && updating);
+        if (summaryKey != _summaryShown)
         {
-            _aiNotes.Clear();
-            _stableNotes = 0;
-            _stableEnd = 0;
-            _notesOwner = _assistant;
-        }
-        else
-        {
-            _aiNotes.Select(_stableEnd, _aiNotes.TextLength - _stableEnd);
-            _aiNotes.SelectedText = "";
+            _summaryShown = summaryKey;
+            Begin(_aiSummary);
+            if (summary != null)
+                AppendMarkdown(_aiSummary, summary);
+            else if (live)
+                AppendGray(_aiSummary, idle ?? (updating ? T.AiThinking : T.AiWaiting)); // not live: the line above the panes says why
+            if (a?.LastError is { } error)
+                AppendColored(_aiSummary, "⚠ " + error, Color.Firebrick);
+            End(_aiSummary);
         }
 
-        if (notes.Length == 0)
+        // ----- notes and answers -----
+        var notesKey = new StringBuilder().Append(idle).Append('\u0001').Append(notes).Append('\u0001').Append(a?.SummaryIsFinal);
+        foreach (var q in questions)
+            notesKey.Append('\u0001').Append(q.Title).Append(q.Text).Append(q.Done).Append(q.Error);
+        if (notesKey.ToString() != _notesShown)
         {
-            _aiNotes.SelectionColor = SystemColors.GrayText;
-            _aiNotes.AppendText(_app.Settings.Assistant.Enabled ? T.AiWaiting : T.AiOffHint);
-        }
-        for (int i = _stableNotes; i < notes.Length; i++)
-        {
-            var note = notes[i];
-            bool done = note.Done; // read before the text: a finished note's text is final
-            _aiNotes.SelectionColor = SystemColors.GrayText;
-            _aiNotes.SelectionFont = new Font(_aiNotes.Font.FontFamily, 8.5F);
-            _aiNotes.AppendText($"{note.At:HH:mm:ss} · {note.Model}\n");
-            _aiNotes.SelectionColor = note.Kind == NoteKind.Question ? Color.FromArgb(79, 70, 229) : SystemColors.WindowText;
-            _aiNotes.SelectionFont = new Font(_aiNotes.Font, FontStyle.Bold);
-            _aiNotes.AppendText(note.Title + "\n");
+            _notesShown = notesKey.ToString();
+            Begin(_aiNotes);
+            if (notes != null)
+                AppendMarkdown(_aiNotes, notes.Length > 0 ? notes : T.AiNothingToSuggest);
+            else if (idle == null && a?.SummaryIsFinal != true)
+                AppendGray(_aiNotes, T.AiNotesWaiting);
 
-            var text = note.Text;
-            if (text.Length == 0 && !note.Done)
+            foreach (var q in questions)
             {
-                _aiNotes.SelectionColor = SystemColors.GrayText;
-                _aiNotes.SelectionFont = _aiNotes.Font;
-                _aiNotes.AppendText(T.AiThinking + "\n");
+                _aiNotes.AppendText("\n");
+                AppendColored(_aiNotes, q.Title, Color.FromArgb(79, 70, 229), bold: true);
+                if (q.Text.Length > 0)
+                    AppendMarkdown(_aiNotes, q.Text);
+                else if (!q.Done)
+                    AppendGray(_aiNotes, T.AiThinking);
+                if (q.Error != null)
+                    AppendColored(_aiNotes, "⚠ " + q.Error, Color.Firebrick);
             }
-            AppendMarkdown(text);
-            if (note.Error != null)
-            {
-                _aiNotes.SelectionColor = Color.Firebrick;
-                _aiNotes.SelectionFont = _aiNotes.Font;
-                _aiNotes.AppendText("⚠ " + note.Error + "\n");
-            }
-            _aiNotes.AppendText("\n");
-
-            if (done && _stableNotes == i)
-            {
-                _stableNotes = i + 1;
-                _stableEnd = _aiNotes.TextLength;
-            }
+            End(_aiNotes);
         }
-        _aiNotes.ResumeLayout();
-        if (atBottom)
-            Ui.ScrollToEnd(_aiNotes);
+    }
+
+    static string When(DateTime? at) => at is { } t ? $"  ·  {t:HH:mm}" : "";
+
+    static void Begin(RichTextBox box)
+    {
+        box.SuspendLayout();
+        box.Clear();
+    }
+
+    static void End(RichTextBox box)
+    {
+        box.SelectionStart = 0;
+        box.ScrollToCaret();
+        box.ResumeLayout();
+    }
+
+    static void AppendGray(RichTextBox box, string text) => AppendColored(box, text, SystemColors.GrayText);
+
+    static void AppendColored(RichTextBox box, string text, Color color, bool bold = false)
+    {
+        box.SelectionStart = box.TextLength;
+        box.SelectionColor = color;
+        box.SelectionFont = bold ? new Font(box.Font, FontStyle.Bold) : box.Font;
+        box.AppendText(text + "\n");
     }
 
     /// <summary>Just enough Markdown for the notes: headings, bullets and **bold**.</summary>
-    void AppendMarkdown(string text)
+    static void AppendMarkdown(RichTextBox box, string text)
     {
-        var bold = new Font(_aiNotes.Font, FontStyle.Bold);
+        var bold = new Font(box.Font, FontStyle.Bold);
+        bool first = true;
         foreach (var raw in text.Replace("\r", "").Split('\n'))
         {
             var line = raw.TrimEnd();
@@ -656,11 +718,15 @@ sealed class AssistantForm : Form
             var trimmed = line.TrimStart();
             if (trimmed.StartsWith('#'))
             {
-                _aiNotes.SelectionColor = Color.FromArgb(79, 70, 229);
-                _aiNotes.SelectionFont = bold;
-                _aiNotes.AppendText(trimmed.TrimStart('#', ' ') + "\n");
+                if (!first)
+                    box.AppendText("\n");
+                box.SelectionColor = Color.FromArgb(79, 70, 229);
+                box.SelectionFont = bold;
+                box.AppendText(trimmed.TrimStart('#', ' ') + "\n");
+                first = false;
                 continue;
             }
+            first = false;
 
             int indent = line.Length - trimmed.Length;
             if (trimmed.StartsWith("- ") || trimmed.StartsWith("* "))
@@ -669,11 +735,11 @@ sealed class AssistantForm : Form
             var parts = trimmed.Split("**");
             for (int i = 0; i < parts.Length; i++)
             {
-                _aiNotes.SelectionColor = SystemColors.WindowText;
-                _aiNotes.SelectionFont = i % 2 == 1 ? bold : _aiNotes.Font;
-                _aiNotes.AppendText(parts[i]);
+                box.SelectionColor = SystemColors.WindowText;
+                box.SelectionFont = i % 2 == 1 ? bold : box.Font;
+                box.AppendText(parts[i]);
             }
-            _aiNotes.AppendText("\n");
+            box.AppendText("\n");
         }
     }
 

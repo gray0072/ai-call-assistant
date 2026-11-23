@@ -15,7 +15,9 @@ sealed record LlmModel(string Id, string Name, decimal? InputPrice, decimal? Out
 
 sealed record ChatMessage(string Role, string Content);
 
-sealed record ChatResult(string Text, int? InputTokens, int? OutputTokens, decimal? Cost);
+/// <param name="FinishReason">Why the model stopped ("stop", "length", …).</param>
+/// <param name="ReasoningChars">Length of the hidden reasoning a thinking model streamed besides the answer.</param>
+sealed record ChatResult(string Text, int? InputTokens, int? OutputTokens, decimal? Cost, string? FinishReason = null, int ReasoningChars = 0);
 
 /// <summary>
 /// Both LM Studio and OpenRouter speak the OpenAI chat-completions protocol, so one client serves both;
@@ -139,6 +141,8 @@ static class LlmClient
         var text = new StringBuilder();
         int? input = null, output = null;
         decimal? cost = null;
+        string? finish = null;
+        int reasoning = 0;
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
@@ -155,7 +159,10 @@ static class LlmClient
                 throw new HttpRequestException((string?)error["message"] ?? error.ToJsonString());
 
             // The last chunk (usage only) comes with an empty "choices".
-            var delta = chunk["choices"] is JsonArray { Count: > 0 } choices ? (string?)choices[0]?["delta"]?["content"] : null;
+            var choice = chunk["choices"] is JsonArray { Count: > 0 } choices ? choices[0] : null;
+            var delta = (string?)choice?["delta"]?["content"];
+            finish = (string?)choice?["finish_reason"] ?? finish;
+            reasoning += ((string?)choice?["delta"]?["reasoning_content"] ?? (string?)choice?["delta"]?["reasoning"])?.Length ?? 0;
             if (!string.IsNullOrEmpty(delta))
             {
                 text.Append(delta);
@@ -170,7 +177,9 @@ static class LlmClient
             }
         }
 
-        return new ChatResult(text.ToString(), input, output, cost);
+        if (text.Length == 0)
+            AppLog.Write($"Empty answer from {model}: finish_reason={finish}, reasoning chars={reasoning}, tokens in/out={input}/{output}");
+        return new ChatResult(text.ToString(), input, output, cost, finish, reasoning);
     }
 
     // ---------- helpers ----------

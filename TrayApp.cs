@@ -124,7 +124,7 @@ sealed class TrayApp : ApplicationContext
         _tick.Tick += (_, _) =>
         {
             _animation++;
-            if (_animation % 5 == 0)
+            if (_animation % 5 == 0 && AssistantAvailable)
                 Assistant?.Tick();
             UpdateUi();
         };
@@ -410,6 +410,9 @@ sealed class TrayApp : ApplicationContext
         _settings.Save();
     }
 
+    /// <summary>The assistant follows the live transcript, so it works only with live recognition.</summary>
+    public bool AssistantAvailable => _settings.Transcription == TranscriptionMode.Live;
+
     public void SetAssistantEnabled(bool enabled)
     {
         if (enabled && _settings.Assistant.Model == null)
@@ -680,7 +683,7 @@ sealed class TrayApp : ApplicationContext
                     FileIntoProject(session);
                     _lastFile = session.TranscriptPath;
                     ShowBalloon(T.TranscriptReady, Path.GetFileName(session.TranscriptPath), ToolTipIcon.Info);
-                    if (_settings.Assistant.Enabled && Session == session)
+                    if (_settings.Assistant.Enabled && AssistantAvailable && Session == session)
                         Assistant?.Finish();
                 });
             }
@@ -815,6 +818,7 @@ sealed class TrayApp : ApplicationContext
         _modeAfter.Checked = _settings.Transcription == TranscriptionMode.AfterRecording;
         _modeOff.Checked = _settings.Transcription == TranscriptionMode.Off;
         _aiEnabled.Checked = _settings.Assistant.Enabled;
+        _aiEnabled.Enabled = AssistantAvailable;
         _folderItem.ToolTipText = T.CurrentFolder(Folder) + (active ? "\n" + T.FolderNextRecording : "");
 
         // What is being processed: model download/loading has priority over the job stage.

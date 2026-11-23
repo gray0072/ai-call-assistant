@@ -47,6 +47,9 @@ sealed class CallAssistant : IDisposable
 
     string? _summary;      // the model's own running summary, carried from run to run
     string? _suggestions;  // its last suggestions, so it does not repeat them
+    string? _summaryView, _notesView;
+    DateTime? _summaryAt, _notesAt;
+    bool _summaryFinal;
     int _linesSeen;        // transcript lines covered by the last live run
     DateTime _lastRun = DateTime.MinValue;
     int _queued;
@@ -77,6 +80,38 @@ sealed class CallAssistant : IDisposable
     }
 
     public bool IsBusy => Volatile.Read(ref _queued) > 0;
+
+    /// <summary>
+    /// The current summary (Markdown) and when it was written: replaced by every update, and after
+    /// the call by the summary of the whole call (<see cref="SummaryIsFinal"/>).
+    /// </summary>
+    public (string? Text, DateTime? At) Summary
+    {
+        get { lock (_notes) return (_summaryView, _summaryAt); }
+    }
+
+    public bool SummaryIsFinal => _summaryFinal;
+
+    /// <summary>Suggestions and doubts of the latest update (Markdown); cleared when the call is over.</summary>
+    public (string? Text, DateTime? At) CurrentNotes
+    {
+        get { lock (_notes) return (_notesView, _notesAt); }
+    }
+
+    /// <summary>A live update or the final summary is being written (the question answers are separate).</summary>
+    public bool IsUpdating
+    {
+        get { lock (_notes) return _notes.Any(n => !n.Done && n.Kind != NoteKind.Question); }
+    }
+
+    /// <summary>The user's questions with the answers, newest first.</summary>
+    public AssistantNote[] Questions
+    {
+        get { lock (_notes) return _notes.Where(n => n.Kind == NoteKind.Question).Reverse().ToArray(); }
+    }
+
+    /// <summary>The error of the latest update, if it failed.</summary>
+    public string? LastError { get; private set; }
 
     static Strings T => Strings.Current;
 
@@ -144,11 +179,18 @@ sealed class CallAssistant : IDisposable
                 var messages = BuildPrompt(note.Kind, question, settings);
                 int maxTokens = note.Kind == NoteKind.Final ? 1500 : 800;
 
-                var result = await LlmClient.ChatAsync(settings, messages, text =>
+                // Small local models now and then return nothing at all: ask once more.
+                ChatResult result = null!;
+                for (int attempt = 1; attempt <= 2; attempt++)
                 {
-                    note.Append(text);
-                    NoteUpdated?.Invoke(note);
-                }, maxTokens, _cts.Token);
+                    result = await LlmClient.ChatAsync(settings, messages, text =>
+                    {
+                        note.Append(text);
+                        NoteUpdated?.Invoke(note);
+                    }, maxTokens, _cts.Token);
+                    if (result.Text.Trim().Length > 0 || result.FinishReason == "length")
+                        break;
+                }
 
                 if (result.Text.Trim().Length == 0)
                     throw new InvalidOperationException(T.AiEmptyAnswer);
@@ -157,6 +199,29 @@ sealed class CallAssistant : IDisposable
                 {
                     _summary = Section(result.Text, T.AiHeadSummary) ?? _summary;
                     _suggestions = Section(result.Text, T.AiHeadSuggestions);
+                    LastError = null;
+                    lock (_notes)
+                    {
+                        if (note.Kind == NoteKind.Final)
+                        {
+                            // The whole call: summary, decisions, action items, open questions.
+                            _summaryView = DropEmptySections(result.Text);
+                            _summaryAt = DateTime.Now;
+                            _summaryFinal = true;
+                            _notesView = null; // suggestions for a call that is over are not current any more
+                            _notesAt = null;
+                        }
+                        else if (!_summaryFinal)
+                        {
+                            if (_summary != null)
+                            {
+                                _summaryView = _summary;
+                                _summaryAt = DateTime.Now;
+                            }
+                            _notesView = DropEmptySections(WithoutSection(result.Text, T.AiHeadSummary));
+                            _notesAt = DateTime.Now;
+                        }
+                    }
                 }
                 if (note.Kind == NoteKind.Live)
                     _linesSeen = lines;
@@ -182,6 +247,8 @@ sealed class CallAssistant : IDisposable
         {
             AppLog.Write($"Assistant ({note.Kind}) failed: {ex}");
             note.Error = ex.GetBaseException().Message;
+            if (note.Kind != NoteKind.Question)
+                LastError = note.Error;
             Failed?.Invoke(note.Error);
         }
         finally
@@ -270,6 +337,51 @@ sealed class CallAssistant : IDisposable
         var body = lines.Skip(start + 1).TakeWhile(l => !l.TrimStart().StartsWith('#'));
         var result = string.Join("\n", body).Trim();
         return result.Length == 0 ? null : result;
+    }
+
+    /// <summary>Things models write under a heading they were told to leave out when it has nothing.</summary>
+    static readonly System.Text.RegularExpressions.Regex Nothing = new(
+        @"^[\s\(\-\*•_]*(none|n/?a|nothing( to (check|report|suggest))?|no (issues|concerns)|нет|ничего( нет)?|не требуется|inget|ingen|inga)[\s\)\.!_]*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>Removes headings with nothing (or only "(None)" and the like) under them.</summary>
+    static string DropEmptySections(string text)
+    {
+        var sections = new List<(string? Heading, List<string> Body)> { (null, new()) };
+        foreach (var line in text.Replace("\r", "").Split('\n'))
+        {
+            if (line.TrimStart().StartsWith('#'))
+                sections.Add((line, new()));
+            else
+                sections[^1].Body.Add(line);
+        }
+
+        var result = new List<string>();
+        foreach (var (heading, body) in sections)
+        {
+            var content = body.Where(l => l.Trim().Length > 0).ToList();
+            if (heading != null && content.All(l => Nothing.IsMatch(l.Trim())))
+                continue;
+            if (heading != null)
+                result.Add(heading);
+            result.AddRange(body);
+        }
+        return string.Join("\n", result).Trim();
+    }
+
+    /// <summary>The text without "## heading" and what is under it.</summary>
+    static string WithoutSection(string text, string heading)
+    {
+        var result = new List<string>();
+        bool skipping = false;
+        foreach (var line in text.Replace("\r", "").Split('\n'))
+        {
+            if (line.TrimStart().StartsWith('#'))
+                skipping = line.TrimStart('#', ' ').Trim().Equals(heading, StringComparison.OrdinalIgnoreCase);
+            if (!skipping)
+                result.Add(line);
+        }
+        return string.Join("\n", result).Trim();
     }
 
     void Save(AssistantNote note)

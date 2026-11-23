@@ -106,7 +106,8 @@ sealed class Strings
     public required string NoCallYet { get; init; }
     public required string DraftNote { get; init; }
     public required string LiveOffHint { get; init; }
-    public required string EnableLive { get; init; }
+    public required string RecognitionLabel { get; init; }
+    public required string RecognitionOffHint { get; init; }
 
     // ---------- known voices ----------
     public required string VoicesTitle { get; init; }
@@ -120,6 +121,12 @@ sealed class Strings
     // ---------- assistant panel ----------
     public required string AiSettingsButton { get; init; }
     public required string AiNoModelChosen { get; init; }
+    public required string AiNeedsLive { get; init; }
+    public required string AiSummaryTitle { get; init; }
+    public required string AiUpdating { get; init; }
+    public required string AiFinalMark { get; init; }
+    public required string AiNotesWaiting { get; init; }
+    public required string AiNothingToSuggest { get; init; }
     public required string AiRuns { get; init; }
     public required Func<int, string> AiInterval { get; init; }
     public required string AiNow { get; init; }
@@ -272,8 +279,9 @@ sealed class Strings
         TranscriptTitle = "Transcript",
         NoCallYet = "No call yet. Start recording, or transcribe a file from the tray menu.",
         DraftNote = "live draft — replaced by an accurate transcript after the call",
-        LiveOffHint = "Live speech recognition is off: the transcript appears after the call.",
-        EnableLive = "Turn on live recognition",
+        LiveOffHint = "Live recognition is off: the transcript appears after the call.",
+        RecognitionLabel = "Recognition:",
+        RecognitionOffHint = "Speech recognition is off: only the audio is recorded.",
 
         VoicesTitle = "Known voices",
 
@@ -291,6 +299,12 @@ sealed class Strings
 
         AiSettingsButton = "Settings…",
         AiNoModelChosen = "no model chosen",
+        AiNeedsLive = "The assistant works with live recognition — set Recognition to “Live, while recording”.",
+        AiSummaryTitle = "Summary",
+        AiUpdating = "updating…",
+        AiFinalMark = "whole call",
+        AiNotesWaiting = "Suggestions, questions worth asking and doubts about what was said appear here.",
+        AiNothingToSuggest = "Nothing to suggest right now.",
         AiRuns = "Update:",
         AiInterval = s => s switch
         {
@@ -444,7 +458,8 @@ sealed class Strings
         NoCallYet = "Звонка ещё не было. Начните запись или распознайте файл из меню в трее.",
         DraftNote = "черновик онлайн — после звонка заменяется точной расшифровкой",
         LiveOffHint = "Онлайн-распознавание выключено: расшифровка появится после звонка.",
-        EnableLive = "Включить онлайн-распознавание",
+        RecognitionLabel = "Распознавание:",
+        RecognitionOffHint = "Распознавание речи выключено: записывается только звук.",
 
         VoicesTitle = "Знакомые голоса",
 
@@ -462,6 +477,12 @@ sealed class Strings
 
         AiSettingsButton = "Настройки…",
         AiNoModelChosen = "модель не выбрана",
+        AiNeedsLive = "Ассистент работает с онлайн-распознаванием — выберите в «Распознавание» вариант «Онлайн, во время записи».",
+        AiSummaryTitle = "Саммари",
+        AiUpdating = "обновляется…",
+        AiFinalMark = "весь звонок",
+        AiNotesWaiting = "Здесь появятся подсказки, вопросы, которые стоит задать, и сомнения в сказанном.",
+        AiNothingToSuggest = "Сейчас подсказать нечего.",
         AiRuns = "Обновлять:",
         AiInterval = s => s switch
         {
@@ -614,8 +635,9 @@ sealed class Strings
         TranscriptTitle = "Transkription",
         NoCallYet = "Inget samtal än. Starta en inspelning eller transkribera en fil från menyn i systemfältet.",
         DraftNote = "direktutkast — ersätts av en noggrann transkription efter samtalet",
-        LiveOffHint = "Direkt taligenkänning är av: transkriptionen kommer efter samtalet.",
-        EnableLive = "Slå på direkt taligenkänning",
+        LiveOffHint = "Direkt igenkänning är av: transkriptionen kommer efter samtalet.",
+        RecognitionLabel = "Igenkänning:",
+        RecognitionOffHint = "Taligenkänningen är av: bara ljudet spelas in.",
 
         VoicesTitle = "Kända röster",
 
@@ -633,6 +655,12 @@ sealed class Strings
 
         AiSettingsButton = "Inställningar…",
         AiNoModelChosen = "ingen modell vald",
+        AiNeedsLive = "Assistenten fungerar med direkt igenkänning — välj ”Direkt, under inspelningen” under Igenkänning.",
+        AiSummaryTitle = "Sammanfattning",
+        AiUpdating = "uppdateras…",
+        AiFinalMark = "hela samtalet",
+        AiNotesWaiting = "Här visas förslag, frågor som är värda att ställa och tvivel om det som sades.",
+        AiNothingToSuggest = "Inget att föreslå just nu.",
         AiRuns = "Uppdatera:",
         AiInterval = s => s switch
         {

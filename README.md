@@ -8,10 +8,10 @@ Windows, .NET 10, WinForms + NAudio, Whisper.net, sherpa-onnx; the assistant use
 
 Opens when the app starts, on a double-click on the tray icon, from the tray menu, or by launching the app (or its desktop shortcut) again. Closing it does not stop anything — the app keeps running in the tray.
 
-- **Top bar:** project, its notes, recording state and Start / Pause / Stop.
+- **Top bar:** project, its notes and folder, speech recognition mode (Live / After recording / Off — chosen before a call, locked while recording), recording state and Start / Pause / Stop.
 - **Participants:** one row per voice heard in the call. Type a name next to a voice — the transcript file is rewritten with it, the assistant sees it, and the voice is recognized in the next calls (see [Known voices](#known-voices)). A name recognized by voice is shown in italics; type it to confirm or type another to correct it. Your own row ("Me") remembers your name for all calls; names given in a project are offered for the next calls of that project.
 - **Transcript:** the live draft during the call, replaced by the accurate transcript after it.
-- **AI assistant:** on/off, model, how often it updates, "Update now", the notes, and a box to ask it a question.
+- **AI assistant:** on/off, model, how often it updates, "Update now", two panes — **Summary** and **Notes** — and a box to ask it a question. Available only with live recognition; otherwise the panel is greyed out and says so.
 
 The windows are laid out with layout panels and scale per monitor (PerMonitorV2), so they stay sharp on 4K screens and when moved between monitors with different scaling. The tray icon is drawn as vectors at the size the taskbar asks for.
 
@@ -67,13 +67,12 @@ While recording with recognition on, the microphone and the speaker output are a
 
 ## AI assistant
 
-Turned on with the checkbox in the window or in the tray menu. It reads the transcript and writes short notes:
+Turned on with the checkbox in the window or in the tray menu; it needs live recognition (it follows the live transcript). It reads the transcript and writes into two panes:
 
-- **Summary** — the call so far, decisions, agreed next steps (carried over from update to update, so long calls fit into a small model);
-- **Suggestions** — an answer to a question put to you, a question worth asking, a topic not covered yet;
-- **Worth checking** — something that sounds factually wrong, contradictory or unclear (only when there is such a thing).
+- **Summary** — one current version of the call so far: decisions, agreed next steps. Each update gets the previous summary and the new speech and writes the summary anew, which replaces the old one (so long calls also fit into a small model). After the call, once the accurate transcript is ready, it is replaced by the summary of the whole call: summary, decisions, action items, open questions.
+- **Notes** — only what is current, from the latest update: **Suggestions** (an answer to a question put to you, a question worth asking, a topic not covered yet) and **Worth checking** (something that sounds factually wrong, contradictory or unclear — only when there is such a thing). When the call is over the suggestions are cleared. Below them are your questions with the answers, newest first.
 
-You can also ask it anything about the call in the box below the notes; it answers in the language of the question. After the call, once the accurate transcript is ready, it writes the summary of the call: decisions, action items, open questions. Notes are written in the interface language and saved next to the recording (`.assistant.md`).
+While an update is being written the panes keep showing the previous text and their titles say "updating…"; the time of the last update is in the titles. You can ask anything about the call in the box below; it answers in the language of the question, the answer streams into the notes. Everything is written in the interface language, and every update is also appended to `.assistant.md` next to the recording.
 
 **When it updates during a call:** only when there is new speech, and either the chosen interval has passed (30 s, 1, 2 or 5 min; default 1 min) or someone else has just asked a question (a phrase ending with "?" — then after 15 s at most). "Only on request" turns automatic updates off; "Update now" and questions always work. Requests never overlap: they queue.
 
