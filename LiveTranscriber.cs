@@ -1,12 +1,12 @@
 using System.Threading.Channels;
 using SherpaOnnx;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
 /// Draft transcript written while recording. The microphone and the speakers are handled separately:
-/// microphone speech is labelled "me", speaker output is split into speakers by voice prints.
-/// Every recognized phrase is appended to the transcript file right away.
+/// microphone speech is "me", speaker output is split into speakers by voice prints.
+/// Every recognized phrase goes to the <see cref="CallSession"/> right away.
 /// </summary>
 sealed class LiveTranscriber
 {
@@ -16,7 +16,7 @@ sealed class LiveTranscriber
     // let other voices leak in and the print drifted until it matched everyone.
     const float SpeakerThreshold = 0.78f;
 
-    readonly Strings _text = Strings.Current; // labels stay in the language the session started with
+    readonly Strings _text = Strings.Current;
 
     sealed record Job(AudioSource Source, long StartSample, float[] Samples);
 
@@ -42,16 +42,15 @@ sealed class LiveTranscriber
     float[] _down = new float[16000];
 
     SpeakerEmbeddingExtractor? _extractor;
-    readonly List<(string Name, float[] Print)> _speakers = new(); // normalized voice print per speaker
+    readonly List<(string Key, float[] Print)> _speakers = new(); // normalized voice print per speaker
     string? _lastRemote;
+    readonly CallSession _session;
 
-    public string FilePath { get; }
-
-    public LiveTranscriber(SpeechEngine engine, string transcriptPath, Action<string> onError)
+    public LiveTranscriber(SpeechEngine engine, CallSession session, Action<string> onError)
     {
         _engine = engine;
         _onError = onError;
-        FilePath = transcriptPath;
+        _session = session;
         _worker = Task.Run(WorkAsync);
     }
 
@@ -141,21 +140,13 @@ sealed class LiveTranscriber
         }
     }
 
-    /// <summary>The recording did not start: stop the worker and remove the empty transcript.</summary>
-    public void Abandon()
-    {
-        _jobs.Writer.TryComplete();
-        _worker.ContinueWith(_ =>
-        {
-            try { File.Delete(FilePath); } catch { /* best effort */ }
-        });
-    }
+    /// <summary>The recording did not start: stop the worker.</summary>
+    public void Abandon() => _jobs.Writer.TryComplete();
 
     async Task WorkAsync()
     {
         // Whisper stays loaded for as long as the live session runs.
         using var lease = _engine.Use();
-        using var writer = Transcript.Create(FilePath);
         try
         {
             await _engine.EnsureLoadedAsync();
@@ -165,7 +156,6 @@ sealed class LiveTranscriber
         {
             AppLog.Write("Live transcription unavailable: " + ex);
             _onError(_text.LiveUnavailable + ex.GetBaseException().Message);
-            writer.WriteLine(_text.DraftUnavailable(ex.GetBaseException().Message));
             await foreach (var _ in _jobs.Reader.ReadAllAsync()) { } // let the recorder keep going
             return;
         }
@@ -180,9 +170,10 @@ sealed class LiveTranscriber
                     if (text.Length == 0)
                         continue;
 
-                    var speaker = job.Source == AudioSource.Microphone ? _text.Me : IdentifySpeaker(job.Samples);
-                    var at = TimeSpan.FromSeconds((double)job.StartSample / SpeechEngine.SampleRate);
-                    writer.WriteLine(Transcript.Line(at, speaker, text));
+                    var speaker = job.Source == AudioSource.Microphone ? CallSession.MeKey : IdentifySpeaker(job.Samples);
+                    var start = TimeSpan.FromSeconds((double)job.StartSample / SpeechEngine.SampleRate);
+                    var end = start + TimeSpan.FromSeconds((double)job.Samples.Length / SpeechEngine.SampleRate);
+                    _session.Add(new Utterance(start, end, speaker, text));
                 }
                 catch (Exception ex)
                 {
@@ -197,6 +188,7 @@ sealed class LiveTranscriber
         }
     }
 
+    /// <returns>Speaker key: "#N" in order of appearance, or "@other" before any voice is known.</returns>
     string IdentifySpeaker(float[] samples)
     {
         float[]? embedding = null;
@@ -211,7 +203,7 @@ sealed class LiveTranscriber
 
         bool reliable = samples.Length >= 2 * SpeechEngine.SampleRate;
         if (embedding == null)
-            return _lastRemote ?? _text.OtherParty;
+            return _lastRemote ?? CallSession.OtherKey;
 
         Normalize(embedding);
         int best = -1;
@@ -226,7 +218,7 @@ sealed class LiveTranscriber
         string name;
         if (best >= 0 && bestScore >= SpeakerThreshold)
         {
-            name = _speakers[best].Name;
+            name = _speakers[best].Key;
         }
         else if (!reliable && _lastRemote != null)
         {
@@ -235,7 +227,7 @@ sealed class LiveTranscriber
         }
         else
         {
-            name = _text.Speaker(_speakers.Count + 1);
+            name = "#" + (_speakers.Count + 1);
             _speakers.Add((name, embedding));
         }
 

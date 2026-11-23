@@ -5,7 +5,7 @@ using NAudio.Lame;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 enum AudioSource { Speakers, Microphone }
 

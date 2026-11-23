@@ -1,6 +1,6 @@
 using NAudio.Wave;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
 /// Microphone and speakers recorded as two separate 16 kHz mono WAV files in the temp folder,
@@ -8,7 +8,7 @@ namespace SoundRecord;
 /// </summary>
 sealed class CallTracks
 {
-    static readonly string Dir = Path.Combine(Path.GetTempPath(), "SoundRecord");
+    static readonly string Dir = Path.Combine(Path.GetTempPath(), "AiCallAssistant");
 
     readonly WaveFileWriter _mic, _speakers;
     readonly Downsampler _micDown = new(), _speakersDown = new();

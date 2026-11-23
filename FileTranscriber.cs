@@ -1,7 +1,7 @@
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
 /// Accurate transcription of a finished recording. With separate tracks the microphone becomes "me"
@@ -17,17 +17,15 @@ static class FileTranscriber
     // Share of the progress bar taken by the preparation (reading, voice separation) — the rest is recognition.
     const double PrepareShare = 0.25;
 
-    sealed record Utterance(float Start, float End, string Speaker, float[] Source);
+    sealed record Turn(float Start, float End, string Speaker, float[] Source); // a voice turn before recognition
 
     /// <param name="progress">Stage text and overall fraction 0..1 (null while unknown).</param>
-    /// <returns>Path of the written .txt transcript.</returns>
-    public static async Task<string> RunAsync(SpeechEngine engine, string audioPath,
+    /// <returns>Phrases in time order; speakers are "@me" and "#N" numbered in order of their first words.</returns>
+    public static async Task<List<Utterance>> RunAsync(SpeechEngine engine, string audioPath,
         Action<string, double?> progress, CallTracks? tracks = null, CancellationToken ct = default)
     {
         using var lease = engine.Use();
-        var s = Strings.Current; // the transcript uses the language chosen when it started
-        var outPath = Path.ChangeExtension(audioPath, ".txt");
-        var tempPath = outPath + ".tmp";
+        var s = Strings.Current;
 
         progress(s.StageLoadingModel, null);
         await engine.EnsureLoadedAsync();
@@ -39,70 +37,53 @@ static class FileTranscriber
 
         double total = Math.Max(1, utterances.Sum(u => u.End - u.Start));
         double done = 0;
-        var speakerNames = new Dictionary<string, string>();
+        var keys = new Dictionary<string, string>();
+        var result = new List<Utterance>();
 
-        try
+        foreach (var u in utterances)
         {
-            await WriteAsync();
-        }
-        catch
-        {
-            try { File.Delete(tempPath); } catch { /* best effort */ }
-            throw;
+            ct.ThrowIfCancellationRequested();
+            progress(s.StageRecognizing, PrepareShare + (1 - PrepareShare) * done / total);
+            done += u.End - u.Start;
+
+            int from = Math.Max(0, (int)((u.Start - MarginSeconds) * SpeechEngine.SampleRate));
+            int to = Math.Min(u.Source.Length, (int)((u.End + MarginSeconds) * SpeechEngine.SampleRate));
+            if (to <= from)
+                continue;
+
+            var text = await engine.TranscribeAsync(u.Source[from..to], ct);
+            if (text.Length == 0)
+                continue;
+
+            // Other people are numbered in order of their first words.
+            if (!keys.TryGetValue(u.Speaker, out var key))
+                keys[u.Speaker] = key = u.Speaker == Me ? CallSession.MeKey : "#" + (keys.Count(p => p.Key != Me) + 1);
+
+            result.Add(new(TimeSpan.FromSeconds(u.Start), TimeSpan.FromSeconds(u.End), key, text));
         }
 
-        File.Move(tempPath, outPath, overwrite: true);
         progress(s.StageDone, 1);
-        return outPath;
-
-        async Task WriteAsync()
-        {
-            using var writer = Transcript.Create(tempPath);
-            foreach (var u in utterances)
-            {
-                ct.ThrowIfCancellationRequested();
-                progress(s.StageRecognizing, PrepareShare + (1 - PrepareShare) * done / total);
-                done += u.End - u.Start;
-
-                int from = Math.Max(0, (int)((u.Start - MarginSeconds) * SpeechEngine.SampleRate));
-                int to = Math.Min(u.Source.Length, (int)((u.End + MarginSeconds) * SpeechEngine.SampleRate));
-                if (to <= from)
-                    continue;
-
-                var text = await engine.TranscribeAsync(u.Source[from..to], ct);
-                if (text.Length == 0)
-                    continue;
-
-                // Other people are numbered in order of their first words.
-                if (!speakerNames.TryGetValue(u.Speaker, out var label))
-                    speakerNames[u.Speaker] = label = u.Speaker == Me ? s.Me : s.Speaker(speakerNames.Count(p => p.Key != Me) + 1);
-
-                writer.WriteLine(Transcript.Line(TimeSpan.FromSeconds(u.Start), label, text));
-            }
-
-            if (speakerNames.Count == 0)
-                writer.WriteLine(s.NoSpeech);
-        }
+        return result;
     }
 
-    static List<Utterance> FromTracks(CallTracks tracks, Action<string, double?> progress, Strings s)
+    static List<Turn> FromTracks(CallTracks tracks, Action<string, double?> progress, Strings s)
     {
         var mic = LoadMono16k(tracks.MicPath);
         var speakers = LoadMono16k(tracks.SpeakersPath);
 
         progress(s.StageMicSpeech, 0.02);
         var result = SpeechEngine.DetectSpeech(mic)
-            .Select(x => new Utterance(x.Start, x.End, Me, mic))
+            .Select(x => new Turn(x.Start, x.End, Me, mic))
             .ToList();
 
         result.AddRange(SeparateVoices(speakers, progress, s));
         return result.OrderBy(u => u.Start).ToList();
     }
 
-    static List<Utterance> FromMix(string audioPath, Action<string, double?> progress, Strings s) =>
+    static List<Turn> FromMix(string audioPath, Action<string, double?> progress, Strings s) =>
         SeparateVoices(LoadMono16k(audioPath), progress, s);
 
-    static List<Utterance> SeparateVoices(float[] samples, Action<string, double?> progress, Strings s)
+    static List<Turn> SeparateVoices(float[] samples, Action<string, double?> progress, Strings s)
     {
         if (samples.Length < SpeechEngine.SampleRate)
             return new();
@@ -126,7 +107,7 @@ static class FileTranscriber
             turns.Add((seg.Start, seg.End, seg.Speaker));
         }
 
-        return turns.Select(t => new Utterance(t.Start, t.End, "#" + t.Speaker, samples)).ToList();
+        return turns.Select(t => new Turn(t.Start, t.End, "#" + t.Speaker, samples)).ToList();
     }
 
     public static float[] LoadMono16k(string path)

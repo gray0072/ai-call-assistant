@@ -1,8 +1,13 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using Microsoft.Win32;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
+/// <summary>
+/// The tray icon and the owner of everything that lives longer than a window: recording,
+/// transcription queue, the current call session and its assistant.
+/// </summary>
 sealed class TrayApp : ApplicationContext
 {
     readonly AppSettings _settings = AppSettings.Load();
@@ -10,9 +15,9 @@ sealed class TrayApp : ApplicationContext
     readonly SynchronizationContext _ui;
 
     readonly NotifyIcon _tray;
-    readonly ToolStripMenuItem _error, _status, _start, _pause, _stop;
+    readonly ToolStripMenuItem _error, _status, _show, _start, _pause, _stop;
     readonly ToolStripMenuItem _modeMenu, _modeLive, _modeAfter, _modeOff;
-    readonly ToolStripMenuItem _transcribeItem, _openFolderItem, _folderItem, _exitItem;
+    readonly ToolStripMenuItem _transcribeItem, _aiEnabled, _aiSettings, _openFolderItem, _folderItem, _exitItem;
     readonly ToolStripMenuItem _languageMenu, _languageSystem;
     readonly List<(string Code, ToolStripMenuItem Item)> _languageItems = new();
     readonly System.Windows.Forms.Timer _tick;
@@ -22,6 +27,7 @@ sealed class TrayApp : ApplicationContext
     LiveTranscriber? _live;
     CallTracks? _tracks;
     string? _lastFile;
+    AssistantForm? _form;
 
     (string Text, double? Fraction)? _engineStatus, _jobStatus;
     Task _queue = Task.CompletedTask; // transcriptions run one after another
@@ -34,14 +40,19 @@ sealed class TrayApp : ApplicationContext
     DateTime _lastBalloonAt;
     bool _balloonIsError;
 
-    public TrayApp()
+    readonly RegisteredWaitHandle _showWait;
+
+    /// <param name="showSignal">Set by a second copy of the app asking this one to show its window.</param>
+    public TrayApp(EventWaitHandle showSignal)
     {
         Strings.Use(_settings.Language);
 
         _error = new ToolStripMenuItem { Visible = false, ForeColor = Color.Firebrick };
         _error.Click += (_, _) => OpenLogAndClearError();
         _status = new ToolStripMenuItem { Enabled = false, Visible = false };
-        _start = new ToolStripMenuItem("", null, (_, _) => Start());
+        _show = new ToolStripMenuItem("", null, (_, _) => ShowWindow());
+        _show.Font = new Font(_show.Font, FontStyle.Bold);
+        _start = new ToolStripMenuItem("", null, (_, _) => { Start(); ShowWindow(); });
         _pause = new ToolStripMenuItem("", null, (_, _) => TogglePause());
         _stop = new ToolStripMenuItem("", null, (_, _) => Stop());
 
@@ -52,6 +63,8 @@ sealed class TrayApp : ApplicationContext
         _modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeLive, _modeAfter, _modeOff });
 
         _transcribeItem = new ToolStripMenuItem("", null, (_, _) => PickFileToTranscribe());
+        _aiEnabled = new ToolStripMenuItem("", null, (_, _) => SetAssistantEnabled(!_settings.Assistant.Enabled));
+        _aiSettings = new ToolStripMenuItem("", null, (_, _) => ShowAiSettings(null));
         _openFolderItem = new ToolStripMenuItem("", null, (_, _) => OpenFolder());
         _folderItem = new ToolStripMenuItem("", null, (_, _) => PickRecordingsFolder());
         _exitItem = new ToolStripMenuItem("", null, (_, _) => Exit());
@@ -72,10 +85,15 @@ sealed class TrayApp : ApplicationContext
         menu.Items.AddRange(new ToolStripItem[]
         {
             _error, _status,
+            _show,
+            new ToolStripSeparator(),
             _start, _pause, _stop,
             new ToolStripSeparator(),
             _modeMenu,
             _transcribeItem,
+            new ToolStripSeparator(),
+            _aiEnabled,
+            _aiSettings,
             new ToolStripSeparator(),
             _openFolderItem,
             _folderItem,
@@ -94,7 +112,7 @@ sealed class TrayApp : ApplicationContext
         });
 
         _tray = new NotifyIcon { ContextMenuStrip = menu, Visible = true };
-        _tray.DoubleClick += (_, _) => OpenFolder();
+        _tray.DoubleClick += (_, _) => ShowWindow();
         _tray.BalloonTipClicked += (_, _) =>
         {
             if (_balloonIsError) OpenLogAndClearError();
@@ -105,19 +123,68 @@ sealed class TrayApp : ApplicationContext
         _tick.Tick += (_, _) =>
         {
             _animation++;
+            if (_animation % 5 == 0)
+                Assistant?.Tick();
             UpdateUi();
         };
+
+        // The tray icon size follows the display scale.
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
+        _showWait = ThreadPool.RegisterWaitForSingleObject(showSignal, (_, _) => OnUi(ShowWindow), null, Timeout.Infinite, false);
 
         CallTracks.DeleteLeftovers();
         PrepareModels();
         UpdateUi();
+        OnUi(ShowWindow);
     }
 
     void OnUi(Action action) => _ui.Post(_ => action(), null);
 
+    void OnDisplaySettingsChanged(object? sender, EventArgs e) => OnUi(() =>
+    {
+        _icons.Clear();
+        UpdateUi();
+    });
+
     string Folder => _settings.RecordingsFolder ?? AppSettings.DefaultRecordingsFolder;
 
     static Strings T => Strings.Current;
+
+    // ---------- state shown by the window ----------
+
+    public AppSettings Settings => _settings;
+
+    /// <summary>The call being recorded, or the last one recorded or transcribed.</summary>
+    public CallSession? Session { get; private set; }
+
+    public CallAssistant? Assistant { get; private set; }
+
+    public bool IsRecording => _recorder != null;
+    public bool IsPaused => _recorder?.IsPaused == true;
+    public TimeSpan Duration => _recorder?.Duration ?? TimeSpan.Zero;
+
+    /// <summary>What is being processed right now, if anything.</summary>
+    public (string Text, double? Fraction)? Work { get; private set; }
+
+    /// <summary>Recording state, progress or settings changed (UI thread).</summary>
+    public event Action? StateChanged;
+
+    /// <summary>Another call became the current one (UI thread).</summary>
+    public event Action? SessionChanged;
+
+    void ShowWindow()
+    {
+        if (_form == null || _form.IsDisposed)
+        {
+            _form = new AssistantForm(this);
+            _form.FormClosed += (_, _) => _form = null;
+        }
+        _form.Show();
+        if (_form.WindowState == FormWindowState.Minimized)
+            _form.WindowState = FormWindowState.Normal;
+        _form.Activate();
+    }
 
     void SetLanguage(string? code)
     {
@@ -125,12 +192,14 @@ sealed class TrayApp : ApplicationContext
         _settings.Save();
         Strings.Use(code);
         ApplyTexts();
+        _form?.ApplyTexts();
         UpdateUi();
     }
 
     /// <summary>Texts that change only with the language; state-dependent ones are set in <see cref="UpdateUi"/>.</summary>
     void ApplyTexts()
     {
+        _show.Text = T.ShowWindow;
         _start.Text = T.StartRecording;
         _stop.Text = T.Stop;
         _modeMenu.Text = T.Recognition;
@@ -138,6 +207,8 @@ sealed class TrayApp : ApplicationContext
         _modeAfter.Text = T.ModeAfter;
         _modeOff.Text = T.ModeOff;
         _transcribeItem.Text = T.TranscribeFile;
+        _aiEnabled.Text = T.AiAssistant;
+        _aiSettings.Text = T.AiSettingsMenu;
         _openFolderItem.Text = T.OpenFolder;
         _folderItem.Text = T.RecordingsFolder;
         _languageMenu.Text = T.Language;
@@ -149,15 +220,107 @@ sealed class TrayApp : ApplicationContext
             item.Checked = _settings.Language == code;
     }
 
+    // ---------- projects, names, assistant ----------
+
+    /// <summary>Project of the current call and of the next recordings (null — none).</summary>
+    public void SetProject(string? name)
+    {
+        var project = _settings.UseProject(name);
+        _settings.Save();
+        if (Session is { State: SessionState.Recording } session)
+            session.Project = project?.Name;
+        UpdateUi();
+    }
+
+    public void SetProjectNotes(string? notes)
+    {
+        if (_settings.FindProject(_settings.Project) is not { } project)
+            return;
+        project.Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        _settings.Save();
+    }
+
+    /// <summary>Gives a voice of the current call a name and remembers it for the project.</summary>
+    public void RenameSpeaker(string key, string? name)
+    {
+        var session = Session;
+        if (session == null)
+            return;
+
+        try
+        {
+            session.Rename(key, name);
+        }
+        catch (Exception ex)
+        {
+            ReportError(T.ErrTranscriptFile, ex.Message);
+        }
+
+        name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        if (key == CallSession.MeKey)
+        {
+            _settings.MyName = name;
+        }
+        else if (name != null && _settings.FindProject(session.Project) is { } project &&
+                 !project.People.Contains(name, StringComparer.OrdinalIgnoreCase))
+        {
+            project.People.Add(name);
+        }
+        _settings.Save();
+    }
+
+    public void SetAssistantEnabled(bool enabled)
+    {
+        if (enabled && _settings.Assistant.Model == null)
+        {
+            // Nothing to run it with yet: let the user pick a model first.
+            ShowAiSettings(_form);
+            if (_settings.Assistant.Model == null)
+                return;
+        }
+        _settings.Assistant.Enabled = enabled;
+        _settings.Save();
+        UpdateUi();
+    }
+
+    public void SetAssistantInterval(int seconds)
+    {
+        _settings.Assistant.IntervalSeconds = seconds;
+        _settings.Save();
+        UpdateUi();
+    }
+
+    public void ShowAiSettings(IWin32Window? owner)
+    {
+        using var dialog = new AiSettingsForm(_settings);
+        if (dialog.ShowDialog(owner) == DialogResult.OK)
+        {
+            _settings.Save();
+            UpdateUi();
+        }
+    }
+
+    void StartSession(CallSession session)
+    {
+        Assistant?.Dispose();
+        Session = session;
+        Assistant = new CallAssistant(session, _settings);
+        Assistant.Failed += message => OnUi(() => ReportError(T.ErrAssistant, message));
+        SessionChanged?.Invoke();
+    }
+
     // ---------- recording ----------
 
-    void Start()
+    public void Start()
     {
         if (_recorder != null)
             return;
 
-        var file = Path.Combine(Folder, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
+        var project = _settings.FindProject(_settings.Project);
+        var folder = project == null ? Folder : Path.Combine(Folder, project.FolderName);
+        var file = Path.Combine(folder, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
         var mode = _settings.Transcription;
+        var session = new CallSession(file, project?.Name, _settings.MyName, isRecording: true);
         CallTracks? tracks = null;
         LiveTranscriber? live = null;
         try
@@ -165,8 +328,7 @@ sealed class TrayApp : ApplicationContext
             if (mode != TranscriptionMode.Off)
                 tracks = new CallTracks(Path.GetFileNameWithoutExtension(file));
             if (mode == TranscriptionMode.Live)
-                live = new LiveTranscriber(_engine, Path.ChangeExtension(file, ".txt"),
-                    message => OnUi(() => ReportError(T.ErrLive, message)));
+                live = new LiveTranscriber(_engine, session, message => OnUi(() => ReportError(T.ErrLive, message)));
 
             Action<AudioSource, float[], int>? tap = tracks == null ? null : (source, audio, count) =>
             {
@@ -186,6 +348,7 @@ sealed class TrayApp : ApplicationContext
 
         _tracks = tracks;
         _live = live;
+        StartSession(session);
 
         if (_recorder.Warnings.Count > 0)
             ReportError(T.WarnPartialStart, string.Join("\n", _recorder.Warnings));
@@ -200,7 +363,7 @@ sealed class TrayApp : ApplicationContext
             Stop();
     }
 
-    void TogglePause()
+    public void TogglePause()
     {
         if (_recorder == null)
             return;
@@ -210,7 +373,7 @@ sealed class TrayApp : ApplicationContext
         UpdateUi();
     }
 
-    void Stop()
+    public void Stop()
     {
         if (_recorder == null)
             return;
@@ -218,6 +381,7 @@ sealed class TrayApp : ApplicationContext
         var recorder = _recorder;
         var tracks = _tracks;
         var live = _live;
+        var session = Session!;
         _recorder = null;
         _tracks = null;
         _live = null;
@@ -250,16 +414,24 @@ sealed class TrayApp : ApplicationContext
             ShowBalloon(T.RecordingSaved, Path.GetFileName(recorder.FilePath), ToolTipIcon.Info);
 
         if (live != null || (saved && _settings.Transcription == TranscriptionMode.AfterRecording))
-            Enqueue(recorder.FilePath, tracks, live);
+        {
+            session.State = SessionState.Transcribing;
+            Enqueue(session, tracks, live);
+        }
         else
+        {
+            session.State = SessionState.Done;
             tracks?.Delete();
+        }
 
         UpdateUi();
     }
 
     // ---------- transcription ----------
 
-    void SetMode(TranscriptionMode mode)
+    public TranscriptionMode Mode => _settings.Transcription;
+
+    public void SetMode(TranscriptionMode mode)
     {
         _settings.Transcription = mode;
         _settings.Save();
@@ -278,7 +450,7 @@ sealed class TrayApp : ApplicationContext
             TaskContinuationOptions.OnlyOnFaulted);
     }
 
-    void PickFileToTranscribe()
+    public void PickFileToTranscribe()
     {
         using var dialog = new OpenFileDialog
         {
@@ -286,8 +458,13 @@ sealed class TrayApp : ApplicationContext
             Filter = $"{T.AudioFiles}|*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac|{T.AllFiles}|*.*",
             InitialDirectory = Directory.Exists(Folder) ? Folder : null
         };
-        if (dialog.ShowDialog() == DialogResult.OK)
-            Enqueue(dialog.FileName, null, null);
+        if (dialog.ShowDialog(_form) != DialogResult.OK)
+            return;
+
+        var session = new CallSession(dialog.FileName, _settings.Project, _settings.MyName, isRecording: false);
+        if (_recorder == null)
+            StartSession(session); // shown in the window unless a call is being recorded
+        Enqueue(session, null, null);
     }
 
     void PickRecordingsFolder()
@@ -307,7 +484,7 @@ sealed class TrayApp : ApplicationContext
         {
             // Make sure we can actually write there before remembering it.
             Directory.CreateDirectory(folder);
-            var probe = Path.Combine(folder, ".soundrecord-write-test");
+            var probe = Path.Combine(folder, ".aicallassistant-write-test");
             File.WriteAllText(probe, "");
             File.Delete(probe);
         }
@@ -329,9 +506,9 @@ sealed class TrayApp : ApplicationContext
     /// Queues an accurate transcription. For a live session its draft is finished first
     /// and then replaced by the accurate version.
     /// </summary>
-    void Enqueue(string audioPath, CallTracks? tracks, LiveTranscriber? live)
+    void Enqueue(CallSession session, CallTracks? tracks, LiveTranscriber? live)
     {
-        var name = Path.GetFileName(audioPath);
+        var name = Path.GetFileName(session.AudioPath);
         var previous = _queue;
         _pending++;
         UpdateUi();
@@ -347,17 +524,22 @@ sealed class TrayApp : ApplicationContext
                 }
 
                 await previous;
-                var transcript = await FileTranscriber.RunAsync(_engine, audioPath,
+                var lines = await FileTranscriber.RunAsync(_engine, session.AudioPath,
                     (stage, fraction) => SetJobStatus($"{name}: {stage}", fraction), tracks);
+                session.AdoptFinal(lines);
+                session.State = SessionState.Done;
 
                 OnUi(() =>
                 {
-                    _lastFile = transcript;
-                    ShowBalloon(T.TranscriptReady, Path.GetFileName(transcript), ToolTipIcon.Info);
+                    _lastFile = session.TranscriptPath;
+                    ShowBalloon(T.TranscriptReady, Path.GetFileName(session.TranscriptPath), ToolTipIcon.Info);
+                    if (_settings.Assistant.Enabled && Session == session)
+                        Assistant?.Finish();
                 });
             }
             catch (Exception ex)
             {
+                session.State = SessionState.Failed;
                 AppLog.Write($"Transcription of {name} failed: {ex}");
                 OnUi(() => ReportError(T.ErrTranscription(name), ex.GetBaseException().Message));
             }
@@ -420,7 +602,7 @@ sealed class TrayApp : ApplicationContext
 
     // ---------- misc ----------
 
-    void OpenFolder()
+    public void OpenFolder()
     {
         try
         {
@@ -439,7 +621,7 @@ sealed class TrayApp : ApplicationContext
     void Exit()
     {
         if (_pending > 0 && MessageBox.Show(
-                T.ExitConfirm, "Sound Record",
+                T.ExitConfirm, AppInfo.Name,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
 
@@ -459,7 +641,9 @@ sealed class TrayApp : ApplicationContext
             catch (Exception ex) { AppLog.Write("Live transcription on exit: " + ex.Message); }
         }
         _tracks?.Delete();
+        Assistant?.Dispose();
 
+        _form?.Close();
         _tray.Visible = false;
         ExitThread();
     }
@@ -477,10 +661,12 @@ sealed class TrayApp : ApplicationContext
         _modeLive.Checked = _settings.Transcription == TranscriptionMode.Live;
         _modeAfter.Checked = _settings.Transcription == TranscriptionMode.AfterRecording;
         _modeOff.Checked = _settings.Transcription == TranscriptionMode.Off;
+        _aiEnabled.Checked = _settings.Assistant.Enabled;
         _folderItem.ToolTipText = T.CurrentFolder(Folder) + (active ? "\n" + T.FolderNextRecording : "");
 
         // What is being processed: model download/loading has priority over the job stage.
         var work = _engineStatus ?? _jobStatus ?? (_pending > 0 ? (T.Queued, null) : null);
+        Work = work;
         string? workText = null;
         if (work is { } w)
         {
@@ -497,58 +683,69 @@ sealed class TrayApp : ApplicationContext
         _error.ToolTipText = _errorText;
 
         string state;
-        Color color;
+        Color? color = null;
         if (!active)
         {
             state = T.StateIdle;
-            color = Color.FromArgb(140, 140, 140);
+            if (work != null)
+                color = Color.FromArgb(140, 140, 140);
         }
         else
         {
             var d = _recorder!.Duration;
-            state = $"{(paused ? T.StatePaused : T.StateRecording)} {(int)d.TotalHours:00}:{d:mm\\:ss}";
+            state = $"{(paused ? T.StatePaused : T.StateRecording)} {Transcript.Time(d)}";
             color = paused ? Color.FromArgb(240, 170, 0) : Color.FromArgb(220, 40, 40);
         }
 
         _tray.Icon = GetIcon(color, work?.Fraction, work != null, _errorText != null);
 
-        var tip = $"Sound Record — {state}";
+        var tip = $"{AppInfo.Name} — {state}";
         if (workText != null)
             tip += "\n" + workText;
         if (_errorText != null)
             tip += "\n" + T.TipError;
         _tray.Text = Shorten(tip, 127);
 
-        // The timer drives the duration counter and the spinner.
+        // The timer drives the duration counter, the spinner and the assistant schedule.
         _tick.Enabled = active || work != null;
+
+        StateChanged?.Invoke();
     }
 
     static string Shorten(string s, int max) => s.Length > max ? s[..(max - 1)] + "…" : s;
 
     // ---------- icon ----------
 
-    Icon GetIcon(Color color, double? fraction, bool busy, bool error)
+    /// <param name="color">Dot color while recording, paused or busy; null — the app icon.</param>
+    Icon GetIcon(Color? color, double? fraction, bool busy, bool error)
     {
+        int size = Math.Max(16, SystemInformation.SmallIconSize.Width);
         // Progress rounded to 5% so only a few dozen icons are ever drawn; unknown progress spins.
         string ring = !busy ? "-" : fraction is { } f ? $"p{(int)(f * 20)}" : $"s{_animation % 8}";
-        var key = $"{color.ToArgb()}|{ring}|{error}";
+        var key = $"{size}|{color?.ToArgb()}|{ring}|{error}";
         if (!_icons.TryGetValue(key, out var icon))
-            _icons[key] = icon = DrawIcon(color, busy, fraction, _animation % 8, error);
+            _icons[key] = icon = DrawIcon(size, color, busy, fraction, _animation % 8, error);
         return icon;
     }
 
-    static Icon DrawIcon(Color color, bool busy, double? fraction, int spinPhase, bool error)
+    static Icon DrawIcon(int size, Color? color, bool busy, double? fraction, int spinPhase, bool error)
     {
-        using var bmp = new Bitmap(32, 32);
+        using var bmp = new Bitmap(size, size);
         using (var g = Graphics.FromImage(bmp))
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
+            // Everything is drawn in 32×32 units and scaled to the size the taskbar wants at this DPI.
+            g.ScaleTransform(size / 32f, size / 32f);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            using var fill = new SolidBrush(color);
-            if (busy)
+            if (color is not { } c)
+            {
+                AppIcon.Paint(g);
+            }
+            else if (busy)
             {
                 // Smaller dot inside a progress ring.
+                using var fill = new SolidBrush(c);
                 g.FillEllipse(fill, 9, 9, 14, 14);
                 using var track = new Pen(Color.FromArgb(110, 128, 128, 128), 5);
                 g.DrawEllipse(track, 3.5f, 3.5f, 25, 25);
@@ -565,6 +762,7 @@ sealed class TrayApp : ApplicationContext
             }
             else
             {
+                using var fill = new SolidBrush(c);
                 g.FillEllipse(fill, 3, 3, 26, 26);
                 using var pen = new Pen(Color.White, 2.5f);
                 g.DrawEllipse(pen, 3, 3, 26, 26);
@@ -589,7 +787,10 @@ sealed class TrayApp : ApplicationContext
     {
         if (disposing)
         {
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            _showWait.Unregister(null);
             _recorder?.Dispose();
+            Assistant?.Dispose();
             _tick.Dispose();
             _tray.Dispose();
             _engine.Dispose();

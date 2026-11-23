@@ -1,9 +1,9 @@
 using System.Globalization;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
-/// All user-visible text in Russian, English and Swedish. <c>required</c> makes the compiler
+/// All user-visible text in English, Russian and Swedish. <c>required</c> makes the compiler
 /// check that every language defines every string.
 /// </summary>
 sealed class Strings
@@ -15,7 +15,7 @@ sealed class Strings
         ("sv", "Svenska")
     };
 
-    // Lazy on purpose: static fields initialize in text order, and Ru/En/Sv are declared below.
+    // Lazy on purpose: static fields initialize in text order, and En/Ru/Sv are declared below.
     static Strings? _current;
 
     /// <summary>Current UI language; switched from the UI thread, read from anywhere.</summary>
@@ -31,7 +31,10 @@ sealed class Strings
         _ => En
     };
 
+    static string Money(decimal value) => "$" + value.ToString(value < 1 ? "0.0000" : "0.00", CultureInfo.InvariantCulture);
+
     // ---------- menu ----------
+    public required string ShowWindow { get; init; }
     public required string StartRecording { get; init; }
     public required string Pause { get; init; }
     public required string Resume { get; init; }
@@ -41,6 +44,8 @@ sealed class Strings
     public required string ModeAfter { get; init; }
     public required string ModeOff { get; init; }
     public required string TranscribeFile { get; init; }
+    public required string AiAssistant { get; init; }
+    public required string AiSettingsMenu { get; init; }
     public required string OpenFolder { get; init; }
     public required string RecordingsFolder { get; init; }
     public required string Language { get; init; }
@@ -69,6 +74,8 @@ sealed class Strings
     public required string ErrLive { get; init; }
     public required string ErrModels { get; init; }
     public required Func<string, string> ErrTranscription { get; init; }
+    public required string ErrTranscriptFile { get; init; }
+    public required string ErrAssistant { get; init; }
     public required string ErrInternal { get; init; }
     public required Func<string, string, string> ErrCannotWrite { get; init; }
     public required Func<string, string, string> Fatal { get; init; }
@@ -77,6 +84,80 @@ sealed class Strings
     public required string AudioFiles { get; init; }
     public required string AllFiles { get; init; }
     public required string PickFolderTitle { get; init; }
+    public required string Cancel { get; init; }
+
+    // ---------- main window ----------
+    public required string Project { get; init; }
+    public required string ProjectNotes { get; init; }
+    public required Func<string, string> ProjectNotesTitle { get; init; }
+    public required string ProjectNotesHint { get; init; }
+    public required string Participants { get; init; }
+    public required string ParticipantsHint { get; init; }
+    public required string ParticipantsEmpty { get; init; }
+    public required string ColumnVoice { get; init; }
+    public required string ColumnName { get; init; }
+    public required string ColumnPhrases { get; init; }
+    public required string TranscriptTitle { get; init; }
+    public required string NoCallYet { get; init; }
+    public required string DraftNote { get; init; }
+    public required string LiveOffHint { get; init; }
+    public required string EnableLive { get; init; }
+
+    // ---------- assistant panel ----------
+    public required string AiSettingsButton { get; init; }
+    public required string AiNoModelChosen { get; init; }
+    public required string AiRuns { get; init; }
+    public required Func<int, string> AiInterval { get; init; }
+    public required string AiNow { get; init; }
+    public required string AiAsk { get; init; }
+    public required string AiQuestionHint { get; init; }
+    public required Func<decimal, string> AiCost { get; init; }
+    public required string AiWaiting { get; init; }
+    public required string AiOffHint { get; init; }
+    public required string AiThinking { get; init; }
+    public required string AiNotesTitle { get; init; }
+    public required string AiFinalTitle { get; init; }
+    public required string AiYouAsked { get; init; }
+    public required string AiCancelled { get; init; }
+    public required string AiEmptyAnswer { get; init; }
+    public required string AiNoModel { get; init; }
+    public required string AiNoKey { get; init; }
+
+    // ---------- what the model is asked to write ----------
+    /// <summary>Name of this language in English, for the prompt ("Write in …").</summary>
+    public required string AiLanguageName { get; init; }
+    public required string AiHeadSummary { get; init; }
+    public required string AiHeadSuggestions { get; init; }
+    public required string AiHeadCheck { get; init; }
+    public required string AiHeadDecisions { get; init; }
+    public required string AiHeadActions { get; init; }
+    public required string AiHeadOpen { get; init; }
+
+    // ---------- AI settings ----------
+    public required string AiSettingsTitle { get; init; }
+    public required string AiSource { get; init; }
+    public required string AiLocal { get; init; }
+    public required string AiCloud { get; init; }
+    public required string AiLmStudioUrl { get; init; }
+    public required string AiApiKey { get; init; }
+    public required string AiCheckKey { get; init; }
+    public required string AiGetKey { get; init; }
+    public required string AiEnterKey { get; init; }
+    public required string AiCheckingKey { get; init; }
+    public required Func<decimal, decimal?, string> AiKeyOk { get; init; }
+    public required Func<string, string> AiKeyFailed { get; init; }
+    public required string AiModel { get; init; }
+    public required string AiRefresh { get; init; }
+    public required string AiLoadingModels { get; init; }
+    public required string AiNoLocalModels { get; init; }
+    public required string AiNoCloudModels { get; init; }
+    public required Func<string, string> AiLmStudioUnavailable { get; init; }
+    public required string AiLocalLoadedInfo { get; init; }
+    public required string AiLocalJitInfo { get; init; }
+    public required string AiLoaded { get; init; }
+    public required Func<int, string> AiContext { get; init; }
+    public required string AiFree { get; init; }
+    public required string AiPerMillion { get; init; }
 
     // ---------- recorder ----------
     public required string SourceSpeakers { get; init; }
@@ -106,84 +187,10 @@ sealed class Strings
     public required Func<int, string> Speaker { get; init; }
     public required string OtherParty { get; init; }
     public required string NoSpeech { get; init; }
-    public required Func<string, string> DraftUnavailable { get; init; }
-
-    static readonly Strings Ru = new()
-    {
-        StartRecording = "Начать запись",
-        Pause = "Пауза",
-        Resume = "Продолжить",
-        Stop = "Стоп",
-        Recognition = "Распознавание речи",
-        ModeLive = "Онлайн, во время записи",
-        ModeAfter = "После записи",
-        ModeOff = "Отключено",
-        TranscribeFile = "Распознать файл…",
-        OpenFolder = "Открыть папку",
-        RecordingsFolder = "Папка для записей…",
-        Language = "Язык (Language)",
-        LanguageSystem = "Как в системе",
-        Exit = "Выход",
-        CurrentFolder = f => "Сейчас: " + f,
-        FolderNextRecording = "Новая папка будет использована со следующей записи.",
-        Queued = "Распознавание в очереди",
-        MoreQueued = n => $" (ещё в очереди: {n})",
-        ErrorCount = n => $" (ошибок: {n})",
-        OpenLog = " — открыть лог",
-
-        StateIdle = "ожидание",
-        StateRecording = "запись",
-        StatePaused = "пауза",
-        TipError = "⚠ ошибка — см. меню",
-
-        RecordingSaved = "Запись сохранена",
-        TranscriptReady = "Расшифровка готова",
-        ErrRecording = "Запись",
-        ErrStart = "Не удалось начать запись",
-        WarnPartialStart = "Запись начата частично",
-        ErrSave = "Не удалось сохранить файл: ",
-        ErrLive = "Онлайн-распознавание",
-        ErrModels = "Модели распознавания",
-        ErrTranscription = name => "Распознавание " + name,
-        ErrInternal = "Внутренняя ошибка",
-        ErrCannotWrite = (folder, msg) => $"Нельзя писать в {folder}: {msg}",
-        Fatal = (msg, log) => $"Sound Record аварийно завершается:\n\n{msg}\n\nПодробности в {log}",
-        ExitConfirm = "Расшифровка ещё не готова и будет прервана. Выйти?",
-        PickFileTitle = "Файл для распознавания",
-        AudioFiles = "Аудио",
-        AllFiles = "Все файлы",
-        PickFolderTitle = "Куда сохранять записи и расшифровки",
-
-        SourceSpeakers = "выход (динамики)",
-        SourceMic = "микрофон",
-        NoDevices = "Не найдено ни одного аудиоустройства.",
-        SourceStopped = (name, msg) => $"{name} перестал записываться: {msg}",
-        SourceFailed = (name, msg) => $"Не удалось подключить {name}: {msg}",
-        TapFailed = "Звук для распознавания больше не передаётся: ",
-        RecordingStopped = "Запись остановлена: ",
-
-        StageLoadingModel = "загрузка модели",
-        StageReading = "чтение записи",
-        StageMicSpeech = "поиск речи на микрофоне",
-        StageVoices = "разделение голосов",
-        StageRecognizing = "распознавание",
-        StageDone = "готово",
-        StageFinishingDraft = "дописываю черновик",
-        LoadingModel = "Загрузка модели распознавания…",
-        ModelUnloaded = "Модель распознавания выгружена.",
-        Downloading = (title, pct, mb) => $"Скачивание {title}: {pct}% из {mb} МБ",
-        DownloadingNoTotal = (title, mb) => $"Скачивание {title}: {mb} МБ",
-        LiveUnavailable = "Онлайн-распознавание недоступно: ",
-
-        Me = "Я",
-        Speaker = n => $"Спикер {n}",
-        OtherParty = "Собеседник",
-        NoSpeech = "(речь не найдена)",
-        DraftUnavailable = msg => $"(распознавание недоступно: {msg})"
-    };
 
     static readonly Strings En = new()
     {
+        ShowWindow = "Open assistant window",
         StartRecording = "Start recording",
         Pause = "Pause",
         Resume = "Resume",
@@ -193,6 +200,8 @@ sealed class Strings
         ModeAfter = "After recording",
         ModeOff = "Off",
         TranscribeFile = "Transcribe file…",
+        AiAssistant = "AI assistant",
+        AiSettingsMenu = "AI assistant settings…",
         OpenFolder = "Open folder",
         RecordingsFolder = "Recordings folder…",
         Language = "Language",
@@ -219,14 +228,90 @@ sealed class Strings
         ErrLive = "Live transcription",
         ErrModels = "Speech models",
         ErrTranscription = name => "Transcription of " + name,
+        ErrTranscriptFile = "Transcript file",
+        ErrAssistant = "AI assistant",
         ErrInternal = "Internal error",
         ErrCannotWrite = (folder, msg) => $"Cannot write to {folder}: {msg}",
-        Fatal = (msg, log) => $"Sound Record is crashing:\n\n{msg}\n\nDetails in {log}",
+        Fatal = (msg, log) => $"{AppInfo.Name} is crashing:\n\n{msg}\n\nDetails in {log}",
         ExitConfirm = "A transcript is not finished yet and will be cancelled. Exit anyway?",
         PickFileTitle = "File to transcribe",
         AudioFiles = "Audio",
         AllFiles = "All files",
         PickFolderTitle = "Where to save recordings and transcripts",
+        Cancel = "Cancel",
+
+        Project = "Project:",
+        ProjectNotes = "Notes…",
+        ProjectNotesTitle = name => $"Notes for “{name}”",
+        ProjectNotesHint = "Background the assistant gets with every request: goals, terms, who is who.",
+        Participants = "Participants",
+        ParticipantsHint = "Type a name next to a voice — the transcript and the assistant will use it.",
+        ParticipantsEmpty = "Voices appear here as people speak.",
+        ColumnVoice = "Voice",
+        ColumnName = "Name",
+        ColumnPhrases = "Phrases",
+        TranscriptTitle = "Transcript",
+        NoCallYet = "No call yet. Start recording, or transcribe a file from the tray menu.",
+        DraftNote = "live draft — replaced by an accurate transcript after the call",
+        LiveOffHint = "Live speech recognition is off: the transcript appears after the call.",
+        EnableLive = "Turn on live recognition",
+
+        AiSettingsButton = "Settings…",
+        AiNoModelChosen = "no model chosen",
+        AiRuns = "Update:",
+        AiInterval = s => s switch
+        {
+            0 => "only on request",
+            < 60 => $"every {s} s",
+            _ => $"every {s / 60} min"
+        },
+        AiNow = "Update now",
+        AiAsk = "Ask",
+        AiQuestionHint = "Ask the assistant about the call…",
+        AiCost = c => "spent " + Money(c),
+        AiWaiting = "The assistant will write a summary and suggestions as the call goes on.",
+        AiOffHint = "Turn on the AI assistant to get a summary, suggestions and fact checks during the call.",
+        AiThinking = "thinking…",
+        AiNotesTitle = "Notes",
+        AiFinalTitle = "Summary of the call",
+        AiYouAsked = "You: ",
+        AiCancelled = "cancelled",
+        AiEmptyAnswer = "The model returned an empty answer.",
+        AiNoModel = "No model is chosen — open the AI assistant settings.",
+        AiNoKey = "No OpenRouter API key — open the AI assistant settings.",
+
+        AiLanguageName = "English",
+        AiHeadSummary = "Summary",
+        AiHeadSuggestions = "Suggestions",
+        AiHeadCheck = "Worth checking",
+        AiHeadDecisions = "Decisions",
+        AiHeadActions = "Action items",
+        AiHeadOpen = "Open questions",
+
+        AiSettingsTitle = "AI assistant settings",
+        AiSource = "Model runs:",
+        AiLocal = "locally in LM Studio",
+        AiCloud = "in the cloud (OpenRouter)",
+        AiLmStudioUrl = "LM Studio address:",
+        AiApiKey = "OpenRouter API key:",
+        AiCheckKey = "Check",
+        AiGetKey = "Get a key at openrouter.ai",
+        AiEnterKey = "Enter a key to see the models and their prices.",
+        AiCheckingKey = "Checking the key…",
+        AiKeyOk = (usage, limit) => $"The key works. Spent {Money(usage)}" + (limit is { } l ? $" of {Money(l)}." : "."),
+        AiKeyFailed = msg => "The key does not work: " + msg,
+        AiModel = "Model:",
+        AiRefresh = "Refresh",
+        AiLoadingModels = "Loading the list of models…",
+        AiNoLocalModels = "LM Studio has no chat models. Download one in LM Studio, e.g. google/gemma-4-e4b.",
+        AiNoCloudModels = "OpenRouter returned no models.",
+        AiLmStudioUnavailable = msg => "LM Studio is not reachable: " + msg + ". Start LM Studio and turn on its local server (Developer tab).",
+        AiLocalLoadedInfo = "Loaded in LM Studio. Transcripts never leave this computer.",
+        AiLocalJitInfo = "LM Studio loads it on the first request (takes a while). Transcripts never leave this computer.",
+        AiLoaded = "loaded",
+        AiContext = n => $"context {n:N0}",
+        AiFree = "free",
+        AiPerMillion = "per 1M tokens in / out",
 
         SourceSpeakers = "output (speakers)",
         SourceMic = "microphone",
@@ -252,12 +337,164 @@ sealed class Strings
         Me = "Me",
         Speaker = n => $"Speaker {n}",
         OtherParty = "Other party",
-        NoSpeech = "(no speech found)",
-        DraftUnavailable = msg => $"(transcription unavailable: {msg})"
+        NoSpeech = "(no speech found)"
+    };
+
+    static readonly Strings Ru = new()
+    {
+        ShowWindow = "Открыть окно ассистента",
+        StartRecording = "Начать запись",
+        Pause = "Пауза",
+        Resume = "Продолжить",
+        Stop = "Стоп",
+        Recognition = "Распознавание речи",
+        ModeLive = "Онлайн, во время записи",
+        ModeAfter = "После записи",
+        ModeOff = "Отключено",
+        TranscribeFile = "Распознать файл…",
+        AiAssistant = "ИИ-ассистент",
+        AiSettingsMenu = "Настройки ИИ-ассистента…",
+        OpenFolder = "Открыть папку",
+        RecordingsFolder = "Папка для записей…",
+        Language = "Язык (Language)",
+        LanguageSystem = "Как в системе",
+        Exit = "Выход",
+        CurrentFolder = f => "Сейчас: " + f,
+        FolderNextRecording = "Новая папка будет использована со следующей записи.",
+        Queued = "Распознавание в очереди",
+        MoreQueued = n => $" (ещё в очереди: {n})",
+        ErrorCount = n => $" (ошибок: {n})",
+        OpenLog = " — открыть лог",
+
+        StateIdle = "ожидание",
+        StateRecording = "запись",
+        StatePaused = "пауза",
+        TipError = "⚠ ошибка — см. меню",
+
+        RecordingSaved = "Запись сохранена",
+        TranscriptReady = "Расшифровка готова",
+        ErrRecording = "Запись",
+        ErrStart = "Не удалось начать запись",
+        WarnPartialStart = "Запись начата частично",
+        ErrSave = "Не удалось сохранить файл: ",
+        ErrLive = "Онлайн-распознавание",
+        ErrModels = "Модели распознавания",
+        ErrTranscription = name => "Распознавание " + name,
+        ErrTranscriptFile = "Файл расшифровки",
+        ErrAssistant = "ИИ-ассистент",
+        ErrInternal = "Внутренняя ошибка",
+        ErrCannotWrite = (folder, msg) => $"Нельзя писать в {folder}: {msg}",
+        Fatal = (msg, log) => $"{AppInfo.Name} аварийно завершается:\n\n{msg}\n\nПодробности в {log}",
+        ExitConfirm = "Расшифровка ещё не готова и будет прервана. Выйти?",
+        PickFileTitle = "Файл для распознавания",
+        AudioFiles = "Аудио",
+        AllFiles = "Все файлы",
+        PickFolderTitle = "Куда сохранять записи и расшифровки",
+        Cancel = "Отмена",
+
+        Project = "Проект:",
+        ProjectNotes = "Заметки…",
+        ProjectNotesTitle = name => $"Заметки к «{name}»",
+        ProjectNotesHint = "Контекст, который ассистент получает с каждым запросом: цели, термины, кто есть кто.",
+        Participants = "Участники",
+        ParticipantsHint = "Впишите имя рядом с голосом — его будут использовать расшифровка и ассистент.",
+        ParticipantsEmpty = "Голоса появятся здесь, когда люди начнут говорить.",
+        ColumnVoice = "Голос",
+        ColumnName = "Имя",
+        ColumnPhrases = "Фраз",
+        TranscriptTitle = "Расшифровка",
+        NoCallYet = "Звонка ещё не было. Начните запись или распознайте файл из меню в трее.",
+        DraftNote = "черновик онлайн — после звонка заменяется точной расшифровкой",
+        LiveOffHint = "Онлайн-распознавание выключено: расшифровка появится после звонка.",
+        EnableLive = "Включить онлайн-распознавание",
+
+        AiSettingsButton = "Настройки…",
+        AiNoModelChosen = "модель не выбрана",
+        AiRuns = "Обновлять:",
+        AiInterval = s => s switch
+        {
+            0 => "только по запросу",
+            < 60 => $"каждые {s} с",
+            _ => $"каждые {s / 60} мин"
+        },
+        AiNow = "Обновить сейчас",
+        AiAsk = "Спросить",
+        AiQuestionHint = "Спросите ассистента о звонке…",
+        AiCost = c => "потрачено " + Money(c),
+        AiWaiting = "Ассистент будет писать саммари и подсказки по ходу звонка.",
+        AiOffHint = "Включите ИИ-ассистента, чтобы получать саммари, подсказки и проверку фактов во время звонка.",
+        AiThinking = "думает…",
+        AiNotesTitle = "Заметки",
+        AiFinalTitle = "Итоги звонка",
+        AiYouAsked = "Вы: ",
+        AiCancelled = "отменено",
+        AiEmptyAnswer = "Модель вернула пустой ответ.",
+        AiNoModel = "Модель не выбрана — откройте настройки ИИ-ассистента.",
+        AiNoKey = "Нет API-ключа OpenRouter — откройте настройки ИИ-ассистента.",
+
+        AiLanguageName = "Russian",
+        AiHeadSummary = "Саммари",
+        AiHeadSuggestions = "Подсказки",
+        AiHeadCheck = "Стоит проверить",
+        AiHeadDecisions = "Решения",
+        AiHeadActions = "Задачи",
+        AiHeadOpen = "Открытые вопросы",
+
+        AiSettingsTitle = "Настройки ИИ-ассистента",
+        AiSource = "Модель работает:",
+        AiLocal = "локально в LM Studio",
+        AiCloud = "в облаке (OpenRouter)",
+        AiLmStudioUrl = "Адрес LM Studio:",
+        AiApiKey = "API-ключ OpenRouter:",
+        AiCheckKey = "Проверить",
+        AiGetKey = "Получить ключ на openrouter.ai",
+        AiEnterKey = "Введите ключ, чтобы увидеть модели и цены.",
+        AiCheckingKey = "Проверяю ключ…",
+        AiKeyOk = (usage, limit) => $"Ключ работает. Потрачено {Money(usage)}" + (limit is { } l ? $" из {Money(l)}." : "."),
+        AiKeyFailed = msg => "Ключ не работает: " + msg,
+        AiModel = "Модель:",
+        AiRefresh = "Обновить",
+        AiLoadingModels = "Загружаю список моделей…",
+        AiNoLocalModels = "В LM Studio нет моделей для чата. Скачайте модель в LM Studio, например google/gemma-4-e4b.",
+        AiNoCloudModels = "OpenRouter не вернул ни одной модели.",
+        AiLmStudioUnavailable = msg => "LM Studio недоступна: " + msg + ". Запустите LM Studio и включите локальный сервер (вкладка Developer).",
+        AiLocalLoadedInfo = "Загружена в LM Studio. Расшифровки не покидают этот компьютер.",
+        AiLocalJitInfo = "LM Studio загрузит её при первом запросе (это займёт время). Расшифровки не покидают этот компьютер.",
+        AiLoaded = "загружена",
+        AiContext = n => $"контекст {n:N0}",
+        AiFree = "бесплатно",
+        AiPerMillion = "за 1M токенов вход / выход",
+
+        SourceSpeakers = "выход (динамики)",
+        SourceMic = "микрофон",
+        NoDevices = "Не найдено ни одного аудиоустройства.",
+        SourceStopped = (name, msg) => $"{name} перестал записываться: {msg}",
+        SourceFailed = (name, msg) => $"Не удалось подключить {name}: {msg}",
+        TapFailed = "Звук для распознавания больше не передаётся: ",
+        RecordingStopped = "Запись остановлена: ",
+
+        StageLoadingModel = "загрузка модели",
+        StageReading = "чтение записи",
+        StageMicSpeech = "поиск речи на микрофоне",
+        StageVoices = "разделение голосов",
+        StageRecognizing = "распознавание",
+        StageDone = "готово",
+        StageFinishingDraft = "дописываю черновик",
+        LoadingModel = "Загрузка модели распознавания…",
+        ModelUnloaded = "Модель распознавания выгружена.",
+        Downloading = (title, pct, mb) => $"Скачивание {title}: {pct}% из {mb} МБ",
+        DownloadingNoTotal = (title, mb) => $"Скачивание {title}: {mb} МБ",
+        LiveUnavailable = "Онлайн-распознавание недоступно: ",
+
+        Me = "Я",
+        Speaker = n => $"Спикер {n}",
+        OtherParty = "Собеседник",
+        NoSpeech = "(речь не найдена)"
     };
 
     static readonly Strings Sv = new()
     {
+        ShowWindow = "Öppna assistentfönstret",
         StartRecording = "Starta inspelning",
         Pause = "Pausa",
         Resume = "Fortsätt",
@@ -267,6 +504,8 @@ sealed class Strings
         ModeAfter = "Efter inspelningen",
         ModeOff = "Av",
         TranscribeFile = "Transkribera fil…",
+        AiAssistant = "AI-assistent",
+        AiSettingsMenu = "Inställningar för AI-assistenten…",
         OpenFolder = "Öppna mappen",
         RecordingsFolder = "Mapp för inspelningar…",
         Language = "Språk (Language)",
@@ -293,14 +532,91 @@ sealed class Strings
         ErrLive = "Direkttranskribering",
         ErrModels = "Taligenkänningsmodeller",
         ErrTranscription = name => "Transkribering av " + name,
+        ErrTranscriptFile = "Transkriptionsfil",
+        ErrAssistant = "AI-assistent",
         ErrInternal = "Internt fel",
         ErrCannotWrite = (folder, msg) => $"Kan inte skriva till {folder}: {msg}",
-        Fatal = (msg, log) => $"Sound Record kraschar:\n\n{msg}\n\nDetaljer finns i {log}",
+        Fatal = (msg, log) => $"{AppInfo.Name} kraschar:\n\n{msg}\n\nDetaljer finns i {log}",
         ExitConfirm = "En transkription är inte klar och kommer att avbrytas. Avsluta ändå?",
         PickFileTitle = "Fil att transkribera",
         AudioFiles = "Ljud",
         AllFiles = "Alla filer",
         PickFolderTitle = "Var inspelningar och transkriptioner ska sparas",
+        Cancel = "Avbryt",
+
+        Project = "Projekt:",
+        ProjectNotes = "Anteckningar…",
+        ProjectNotesTitle = name => $"Anteckningar för ”{name}”",
+        ProjectNotesHint = "Bakgrund som assistenten får med varje förfrågan: mål, begrepp, vem som är vem.",
+        Participants = "Deltagare",
+        ParticipantsHint = "Skriv ett namn bredvid en röst — transkriptionen och assistenten använder det.",
+        ParticipantsEmpty = "Rösterna visas här när folk börjar prata.",
+        ColumnVoice = "Röst",
+        ColumnName = "Namn",
+        ColumnPhrases = "Fraser",
+        TranscriptTitle = "Transkription",
+        NoCallYet = "Inget samtal än. Starta en inspelning eller transkribera en fil från menyn i systemfältet.",
+        DraftNote = "direktutkast — ersätts av en noggrann transkription efter samtalet",
+        LiveOffHint = "Direkt taligenkänning är av: transkriptionen kommer efter samtalet.",
+        EnableLive = "Slå på direkt taligenkänning",
+
+        AiSettingsButton = "Inställningar…",
+        AiNoModelChosen = "ingen modell vald",
+        AiRuns = "Uppdatera:",
+        AiInterval = s => s switch
+        {
+            0 => "bara på begäran",
+            < 60 => $"var {s}:e sekund",
+            1 * 60 => "varje minut",
+            _ => $"var {s / 60}:e minut"
+        },
+        AiNow = "Uppdatera nu",
+        AiAsk = "Fråga",
+        AiQuestionHint = "Fråga assistenten om samtalet…",
+        AiCost = c => "kostat " + Money(c),
+        AiWaiting = "Assistenten skriver en sammanfattning och förslag medan samtalet pågår.",
+        AiOffHint = "Slå på AI-assistenten för att få sammanfattning, förslag och faktakoll under samtalet.",
+        AiThinking = "tänker…",
+        AiNotesTitle = "Anteckningar",
+        AiFinalTitle = "Sammanfattning av samtalet",
+        AiYouAsked = "Du: ",
+        AiCancelled = "avbrutet",
+        AiEmptyAnswer = "Modellen returnerade ett tomt svar.",
+        AiNoModel = "Ingen modell är vald — öppna inställningarna för AI-assistenten.",
+        AiNoKey = "Ingen API-nyckel för OpenRouter — öppna inställningarna för AI-assistenten.",
+
+        AiLanguageName = "Swedish",
+        AiHeadSummary = "Sammanfattning",
+        AiHeadSuggestions = "Förslag",
+        AiHeadCheck = "Värt att kontrollera",
+        AiHeadDecisions = "Beslut",
+        AiHeadActions = "Att göra",
+        AiHeadOpen = "Öppna frågor",
+
+        AiSettingsTitle = "Inställningar för AI-assistenten",
+        AiSource = "Modellen körs:",
+        AiLocal = "lokalt i LM Studio",
+        AiCloud = "i molnet (OpenRouter)",
+        AiLmStudioUrl = "Adress till LM Studio:",
+        AiApiKey = "API-nyckel för OpenRouter:",
+        AiCheckKey = "Kontrollera",
+        AiGetKey = "Skaffa en nyckel på openrouter.ai",
+        AiEnterKey = "Ange en nyckel för att se modellerna och deras priser.",
+        AiCheckingKey = "Kontrollerar nyckeln…",
+        AiKeyOk = (usage, limit) => $"Nyckeln fungerar. Förbrukat {Money(usage)}" + (limit is { } l ? $" av {Money(l)}." : "."),
+        AiKeyFailed = msg => "Nyckeln fungerar inte: " + msg,
+        AiModel = "Modell:",
+        AiRefresh = "Uppdatera",
+        AiLoadingModels = "Hämtar listan över modeller…",
+        AiNoLocalModels = "LM Studio har inga chattmodeller. Ladda ner en i LM Studio, t.ex. google/gemma-4-e4b.",
+        AiNoCloudModels = "OpenRouter returnerade inga modeller.",
+        AiLmStudioUnavailable = msg => "LM Studio går inte att nå: " + msg + ". Starta LM Studio och slå på den lokala servern (fliken Developer).",
+        AiLocalLoadedInfo = "Inläst i LM Studio. Transkriptioner lämnar aldrig den här datorn.",
+        AiLocalJitInfo = "LM Studio läser in den vid första förfrågan (tar en stund). Transkriptioner lämnar aldrig den här datorn.",
+        AiLoaded = "inläst",
+        AiContext = n => $"kontext {n:N0}",
+        AiFree = "gratis",
+        AiPerMillion = "per 1M tokens in / ut",
 
         SourceSpeakers = "utgången (högtalarna)",
         SourceMic = "mikrofonen",
@@ -326,7 +642,6 @@ sealed class Strings
         Me = "Jag",
         Speaker = n => $"Talare {n}",
         OtherParty = "Motpart",
-        NoSpeech = "(inget tal hittades)",
-        DraftUnavailable = msg => $"(transkribering inte tillgänglig: {msg})"
+        NoSpeech = "(inget tal hittades)"
     };
 }

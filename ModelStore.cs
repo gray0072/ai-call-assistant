@@ -1,4 +1,4 @@
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>Speech models live in the "models" folder next to the exe and are downloaded on first use.</summary>
 static class ModelStore
@@ -33,7 +33,7 @@ static class ModelStore
 
         Directory.CreateDirectory(Dir);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("SoundRecord/1.0");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("AiCallAssistant/1.0");
 
         foreach (var m in missing)
         {

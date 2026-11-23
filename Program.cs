@@ -1,14 +1,25 @@
-namespace SoundRecord;
+namespace AiCallAssistant;
+
+static class AppInfo
+{
+    public const string Name = "AI Call Assistant";
+}
 
 static class Program
 {
     [STAThread]
     static void Main()
     {
-        using var mutex = new Mutex(true, @"Local\SoundRecord.SingleInstance", out bool isFirst);
+        // Starting the app again (e.g. from the desktop shortcut) brings up the running one's window.
+        using var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\AiCallAssistant.Show");
+        using var mutex = new Mutex(true, @"Local\AiCallAssistant.SingleInstance", out bool isFirst);
         if (!isFirst)
+        {
+            showSignal.Set();
             return;
+        }
 
+        // Per-monitor DPI awareness, visual styles and the default font come from the .csproj.
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
@@ -17,10 +28,10 @@ static class Program
         {
             AppLog.Write("FATAL: " + e.ExceptionObject);
             MessageBox.Show(Strings.Current.Fatal((e.ExceptionObject as Exception)?.Message ?? "", AppLog.FilePath),
-                "Sound Record", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
         };
 
-        var app = new TrayApp();
+        var app = new TrayApp(showSignal);
         Application.ThreadException += (_, e) =>
         {
             AppLog.Write("UI error: " + e.Exception);

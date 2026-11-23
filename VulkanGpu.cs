@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
 /// Finds the discrete GPU among Vulkan devices. On laptops with an integrated GPU as well,

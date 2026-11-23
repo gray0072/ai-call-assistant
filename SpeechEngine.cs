@@ -4,7 +4,7 @@ using SherpaOnnx;
 using Whisper.net;
 using Whisper.net.LibraryLoader;
 
-namespace SoundRecord;
+namespace AiCallAssistant;
 
 /// <summary>
 /// Owns the speech models: Whisper (speech → text, GPU via Vulkan with CPU fallback)
@@ -170,7 +170,7 @@ sealed class SpeechEngine : IDisposable
 
     // ---------- recognition ----------
 
-    /// <summary>Transcribes one utterance (16 kHz mono), picking Russian, English or Swedish for it. Hold a lease while calling.</summary>
+    /// <summary>Transcribes one utterance (16 kHz mono), picking English, Russian or Swedish for it. Hold a lease while calling.</summary>
     public async Task<string> TranscribeAsync(float[] samples, CancellationToken ct = default)
     {
         if (samples.Length < SampleRate * 0.3)
@@ -318,16 +318,6 @@ sealed class SpeechEngine : IDisposable
             _factory = null;
         }
     }
-}
-
-static class Transcript
-{
-    public static StreamWriter Create(string path) =>
-        new(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete),
-            new UTF8Encoding(false)) { AutoFlush = true };
-
-    public static string Line(TimeSpan at, string speaker, string text) =>
-        $"[{(int)at.TotalHours:00}:{at:mm\\:ss}] {speaker}: {text}";
 }
 
 /// <summary>48 kHz → 16 kHz by averaging every three samples (good enough for speech models).</summary>
