@@ -41,7 +41,9 @@ bin\Release\net10.0-windows\AiCallAssistant.exe
 | `TrayApp.cs` | Tray icon and menu; owns recording, transcription queue, the current `CallSession` and its `CallAssistant` |
 | `AssistantForm.cs` | Main window; only displays state owned by `TrayApp`, closing it stops nothing |
 | `AiSettingsForm.cs` | LM Studio / OpenRouter choice, API key, model list |
-| `CallSession.cs` | Phrases with speaker keys (`@me`, `@other`, `#N`), names, writing the transcript, mapping draft voices to the accurate ones |
+| `CallSession.cs` | Phrases with speaker keys (`@me`, `@other`, `#N`), typed and recognized names, voice prints, writing the transcript, mapping draft voices to the accurate ones, moving the call's files |
+| `VoiceLibrary.cs` | Known voices (`voices.json`): enroll, match with thresholds and margin, forget |
+| `VoicesForm.cs` | List of known voices |
 | `CallAssistant.cs` | Scheduling, prompts, notes, cost |
 | `LlmClient.cs` | OpenAI-compatible streaming chat for both providers, model lists, starting the LM Studio server |
 | `CallRecorder.cs`, `CallTracks.cs` | Capture, mixing, MP3; temporary 16 kHz tracks |
@@ -56,6 +58,9 @@ Threading: recognition and LLM requests run on background threads; `CallSession`
 - The laptop has two GPUs; whisper.cpp must get the discrete one (`VulkanGpu`), the integrated Radeon crashes on model load.
 - LM Studio's context length is what the model was **loaded** with (often 8192), not its maximum; the transcript sent is limited by it (`AssistantSettings.LocalContext`).
 - OpenRouter's last streamed chunk carries `usage` with an empty `choices` array.
+- Voice-print similarities on compressed call audio are high even between different people (up to ~0.76, see `VoiceLibrary.FinalThreshold`). Re-measure on real calls before lowering the thresholds; a wrong name is worse than none.
+- A call's files are moved only when nothing writes to them (state Done/Failed); all writes to them go through `CallSession` under its lock (`Add`, `WriteFile`, `AppendNotes`, `MoveTo`).
+- `voices.json` holds biometric data: never commit it, log it or send it anywhere.
 - Editing Cyrillic or Swedish text through PowerShell can corrupt it (code page); use the file tools or Bash.
 - Never log or commit the API key; it is stored only DPAPI-encrypted.
 

@@ -12,6 +12,7 @@ sealed class TrayApp : ApplicationContext
 {
     readonly AppSettings _settings = AppSettings.Load();
     readonly SpeechEngine _engine = new();
+    readonly VoiceLibrary _voices = VoiceLibrary.Load();
     readonly SynchronizationContext _ui;
 
     readonly NotifyIcon _tray;
@@ -134,6 +135,7 @@ sealed class TrayApp : ApplicationContext
         _showWait = ThreadPool.RegisterWaitForSingleObject(showSignal, (_, _) => OnUi(ShowWindow), null, Timeout.Infinite, false);
 
         CallTracks.DeleteLeftovers();
+        DiscoverProjects();
         PrepareModels();
         UpdateUi();
         OnUi(ShowWindow);
@@ -222,14 +224,144 @@ sealed class TrayApp : ApplicationContext
 
     // ---------- projects, names, assistant ----------
 
-    /// <summary>Project of the current call and of the next recordings (null — none).</summary>
+    /// <summary>
+    /// Project of the current call and of the next recordings (null — none). A recorded call's files
+    /// move to the project's folder — at once if the call is finished, otherwise when it is.
+    /// </summary>
     public void SetProject(string? name)
     {
         var project = _settings.UseProject(name);
         _settings.Save();
-        if (Session is { State: SessionState.Recording } session)
+        if (Session is { IsRecording: true } session)
+        {
             session.Project = project?.Name;
+            if (session.State is SessionState.Done or SessionState.Failed)
+                FileIntoProject(session);
+        }
         UpdateUi();
+    }
+
+    /// <summary>Folder of a project's recordings (the recordings folder itself for no project).</summary>
+    public string ProjectFolder(string? project) =>
+        _settings.FindProject(project) is { } p ? Path.Combine(Folder, p.FolderName) : Folder;
+
+    /// <summary>Moves a finished recorded call to the folder of its project.</summary>
+    void FileIntoProject(CallSession session)
+    {
+        if (!session.IsRecording)
+            return; // a transcribed file stays where the user keeps it
+        try
+        {
+            if (session.MoveTo(ProjectFolder(session.Project)))
+                _lastFile = session.AudioPath;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"Moving {session.AudioPath} failed: {ex}");
+            ReportError(T.ErrMoveFiles, ex.Message);
+        }
+    }
+
+    /// <summary>Subfolders of the recordings folder are projects too (e.g. created in Explorer).</summary>
+    void DiscoverProjects()
+    {
+        try
+        {
+            if (!Directory.Exists(Folder))
+                return;
+            bool added = false;
+            foreach (var dir in Directory.EnumerateDirectories(Folder))
+            {
+                var name = Path.GetFileName(dir);
+                if (name.StartsWith('.') || _settings.Projects.Any(p => string.Equals(p.FolderName, name, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                _settings.Projects.Add(new ProjectInfo { Name = name });
+                added = true;
+            }
+            if (added)
+                _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Looking for project folders failed: " + ex.Message);
+        }
+    }
+
+    public void OpenProjectFolder()
+    {
+        var folder = ProjectFolder(_settings.Project);
+        try
+        {
+            Directory.CreateDirectory(folder);
+            Process.Start("explorer.exe", $"\"{folder}\"");
+        }
+        catch (Exception ex)
+        {
+            ReportError(T.RecordingsFolder.TrimEnd('…'), ex.Message);
+        }
+    }
+
+    // ---------- voices ----------
+
+    public VoiceLibrary Voices => _voices;
+
+    /// <summary>A live phrase from the speakers: try to recognize its voice among known people.</summary>
+    void OnLiveVoice(CallSession session, string key, float[] print)
+    {
+        var (average, phrases) = session.AddLivePrint(key, print);
+        if (session.IsNamedByUser(key))
+            return;
+        var match = _voices.Match(average, VoiceLibrary.LiveThreshold, session.UsedNames(key));
+        if (match != null)
+            session.SetRecognized(key, match.Name, match.Score);
+        else if (phrases >= 4)
+            session.SetRecognized(key, null, 0); // enough speech says it is not who we thought
+    }
+
+    /// <summary>
+    /// After the accurate pass: remembers the voices the user named and recognizes the others
+    /// again with the better prints of the whole call.
+    /// </summary>
+    void LearnAndRecognize(CallSession session)
+    {
+        try
+        {
+            foreach (var speaker in session.Speakers)
+                if (session.IsNamedByUser(speaker.Key))
+                    Learn(session, speaker.Key, session.NameOf(speaker.Key));
+
+            var unnamed = session.Prints
+                .Where(p => p.Key != CallSession.MeKey && !session.IsNamedByUser(p.Key))
+                .ToDictionary(p => p.Key, p => p.Value);
+            var userNames = session.Speakers.Where(s => session.IsNamedByUser(s.Key)).Select(s => s.Label).ToList();
+            var matches = _voices.MatchAll(unnamed, VoiceLibrary.FinalThreshold, userNames);
+            foreach (var key in unnamed.Keys)
+            {
+                matches.TryGetValue(key, out var match);
+                session.SetRecognized(key, match?.Name, match?.Score ?? 0);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Voice recognition failed: " + ex);
+        }
+    }
+
+    /// <summary>Remembers (or, with no name, forgets) the voice of one speaker of a call.</summary>
+    void Learn(CallSession session, string key, string? name)
+    {
+        if (session.Print(key) is not { } print)
+            return;
+        if (name != null)
+            _voices.Enroll(name, print, session.Project, session.Id);
+        else
+            _voices.Unenroll(print, session.Id);
+    }
+
+    public void ShowVoices(IWin32Window? owner)
+    {
+        using var dialog = new VoicesForm(_voices);
+        dialog.ShowDialog(owner);
     }
 
     public void SetProjectNotes(string? notes)
@@ -257,6 +389,15 @@ sealed class TrayApp : ApplicationContext
         }
 
         name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+
+        // A finished call has its voice prints: learn the voice now. During the call this
+        // happens after the accurate pass, which gives better prints.
+        if (session.State is SessionState.Done or SessionState.Failed)
+        {
+            try { Learn(session, key, name); }
+            catch (Exception ex) { AppLog.Write("Learning a voice failed: " + ex); }
+        }
+
         if (key == CallSession.MeKey)
         {
             _settings.MyName = name;
@@ -328,7 +469,8 @@ sealed class TrayApp : ApplicationContext
             if (mode != TranscriptionMode.Off)
                 tracks = new CallTracks(Path.GetFileNameWithoutExtension(file));
             if (mode == TranscriptionMode.Live)
-                live = new LiveTranscriber(_engine, session, message => OnUi(() => ReportError(T.ErrLive, message)));
+                live = new LiveTranscriber(_engine, session, message => OnUi(() => ReportError(T.ErrLive, message)),
+                    (key, print) => OnLiveVoice(session, key, print));
 
             Action<AudioSource, float[], int>? tap = tracks == null ? null : (source, audio, count) =>
             {
@@ -422,6 +564,7 @@ sealed class TrayApp : ApplicationContext
         {
             session.State = SessionState.Done;
             tracks?.Delete();
+            FileIntoProject(session);
         }
 
         UpdateUi();
@@ -499,6 +642,7 @@ sealed class TrayApp : ApplicationContext
             : folder;
         _settings.Save();
         _lastFile = null;
+        DiscoverProjects();
         UpdateUi();
     }
 
@@ -524,13 +668,16 @@ sealed class TrayApp : ApplicationContext
                 }
 
                 await previous;
-                var lines = await FileTranscriber.RunAsync(_engine, session.AudioPath,
+                var result = await FileTranscriber.RunAsync(_engine, session.AudioPath,
                     (stage, fraction) => SetJobStatus($"{name}: {stage}", fraction), tracks);
-                session.AdoptFinal(lines);
-                session.State = SessionState.Done;
+                session.AdoptFinal(result);
 
+                // On the UI thread, so that names typed meanwhile are not missed.
                 OnUi(() =>
                 {
+                    LearnAndRecognize(session);
+                    session.State = SessionState.Done;
+                    FileIntoProject(session);
                     _lastFile = session.TranscriptPath;
                     ShowBalloon(T.TranscriptReady, Path.GetFileName(session.TranscriptPath), ToolTipIcon.Info);
                     if (_settings.Assistant.Enabled && Session == session)
@@ -539,9 +686,15 @@ sealed class TrayApp : ApplicationContext
             }
             catch (Exception ex)
             {
-                session.State = SessionState.Failed;
                 AppLog.Write($"Transcription of {name} failed: {ex}");
-                OnUi(() => ReportError(T.ErrTranscription(name), ex.GetBaseException().Message));
+                OnUi(() =>
+                {
+                    // Keep what the live draft knew: names typed during the call and the files' place.
+                    LearnAndRecognize(session);
+                    session.State = SessionState.Failed;
+                    FileIntoProject(session);
+                    ReportError(T.ErrTranscription(name), ex.GetBaseException().Message);
+                });
             }
             finally
             {

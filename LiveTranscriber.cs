@@ -45,12 +45,15 @@ sealed class LiveTranscriber
     readonly List<(string Key, float[] Print)> _speakers = new(); // normalized voice print per speaker
     string? _lastRemote;
     readonly CallSession _session;
+    readonly Action<string, float[]>? _onVoice;
 
-    public LiveTranscriber(SpeechEngine engine, CallSession session, Action<string> onError)
+    /// <param name="onVoice">Gets the voice print of every long enough phrase from the speakers, with its speaker key.</param>
+    public LiveTranscriber(SpeechEngine engine, CallSession session, Action<string> onError, Action<string, float[]>? onVoice = null)
     {
         _engine = engine;
         _onError = onError;
         _session = session;
+        _onVoice = onVoice;
         _worker = Task.Run(WorkAsync);
     }
 
@@ -205,12 +208,12 @@ sealed class LiveTranscriber
         if (embedding == null)
             return _lastRemote ?? CallSession.OtherKey;
 
-        Normalize(embedding);
+        VoicePrint.Normalize(embedding);
         int best = -1;
         float bestScore = -1;
         for (int i = 0; i < _speakers.Count; i++)
         {
-            float score = Dot(embedding, _speakers[i].Print);
+            float score = VoicePrint.Similarity(embedding, _speakers[i].Print);
             if (score > bestScore)
                 (best, bestScore) = (i, score);
         }
@@ -232,23 +235,8 @@ sealed class LiveTranscriber
         }
 
         _lastRemote = name;
+        if (reliable)
+            _onVoice?.Invoke(name, embedding);
         return name;
-    }
-
-    static void Normalize(float[] v)
-    {
-        float norm = MathF.Sqrt(v.Sum(x => x * x));
-        if (norm > 0)
-            for (int i = 0; i < v.Length; i++)
-                v[i] /= norm;
-    }
-
-    /// <summary>Cosine similarity of two normalized vectors.</summary>
-    static float Dot(float[] a, float[] b)
-    {
-        float dot = 0;
-        for (int i = 0; i < a.Length; i++)
-            dot += a[i] * b[i];
-        return dot;
     }
 }

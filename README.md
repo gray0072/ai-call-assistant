@@ -9,15 +9,41 @@ Windows, .NET 10, WinForms + NAudio, Whisper.net, sherpa-onnx; the assistant use
 Opens when the app starts, on a double-click on the tray icon, from the tray menu, or by launching the app (or its desktop shortcut) again. Closing it does not stop anything — the app keeps running in the tray.
 
 - **Top bar:** project, its notes, recording state and Start / Pause / Stop.
-- **Participants:** one row per voice heard in the call. Type a name next to a voice — the transcript file is rewritten with it and the assistant sees it. Your own row ("Me") remembers your name for all calls; names given in a project are offered for the next calls of that project.
+- **Participants:** one row per voice heard in the call. Type a name next to a voice — the transcript file is rewritten with it, the assistant sees it, and the voice is recognized in the next calls (see [Known voices](#known-voices)). A name recognized by voice is shown in italics; type it to confirm or type another to correct it. Your own row ("Me") remembers your name for all calls; names given in a project are offered for the next calls of that project.
 - **Transcript:** the live draft during the call, replaced by the accurate transcript after it.
 - **AI assistant:** on/off, model, how often it updates, "Update now", the notes, and a box to ask it a question.
 
 The windows are laid out with layout panels and scale per monitor (PerMonitorV2), so they stay sharp on 4K screens and when moved between monitors with different scaling. The tray icon is drawn as vectors at the size the taskbar asks for.
 
-## Projects
+## Projects and folders
 
-The project field at the top takes an existing project from the list or a new name (Enter). Recordings of a project go to a subfolder with its name. "Notes…" holds background for the assistant: goals, terms, who is who — it gets them with every request.
+The project field at the top takes an existing project from the list or a new name (Enter). Each project is a subfolder of the recordings folder:
+
+```
+Documents\AI Call Assistant\
+    2026-11-20_10-00-00.mp3 / .txt / .assistant.md     <- calls without a project
+    Mobile app\
+        2026-11-23_12-01-02.mp3
+        2026-11-23_12-01-02.txt
+        2026-11-23_12-01-02.assistant.md
+```
+
+- A call is recorded into the folder of the project chosen at its start.
+- Changing the project of the current call (during it or after) moves its recording, transcript and notes to the new project's folder once the call is finished.
+- A folder created in the recordings folder (e.g. in Explorer) shows up as a project.
+- "Folder" next to the project opens its folder; "Notes…" holds background for the assistant — goals, terms, who is who — sent with every request.
+
+Transcribed files ("Transcribe file…") are not moved: the transcript is written next to the file.
+
+## Known voices
+
+When you name a voice, the app remembers a voice print of it (an averaged speaker embedding) and names that person automatically in later calls — in any project, and in transcribed files too (your own voice is learned from the microphone track once you have named "Me").
+
+- During a call a voice is compared after each phrase of 2 s or more (average of its phrases so far); after the call the accurate pass compares the print of the whole call again and corrects the names. Each known person is given to at most one voice per call.
+- A name is given only when the voice is clearly closer to one person than to anyone else (similarity ≥ 0.80 for the whole call, ≥ 0.82 during it, and at least 0.06 above the second best). On a test call the same person scored 0.88–0.90 against their print from another part of the call, an unknown person at most 0.74 — a missed name is preferred to a wrong one.
+- Recognized names are shown in italics. Typing a name (the same or another) confirms or corrects it, and recognition never touches that voice again in the call; clearing the name of a finished call also forgets that call's sample of the voice.
+- One sample per person per call, the latest 12 are kept. "Known voices…" under the participants lists the people with the number of calls and the last time heard, and can forget them.
+- Voice prints are biometric data: they are kept only in `voices.json` next to the exe (not in git, never sent anywhere).
 
 ## Recording
 
@@ -101,3 +127,4 @@ Native libraries (`libmp3lame.*.dll`, `runtimes\...`) must sit next to the exe, 
 - Without headphones the microphone hears the speakers, and the others' speech may appear in the transcript again labelled "Me".
 - The live draft may split one person into two speakers or merge similar voices; the accurate transcript after Stop fixes that.
 - The assistant sees only what speech recognition heard; it can be wrong, and a small local model more so. It does not search the web.
+- Voice recognition depends on the voice separation: if two people were merged into one voice when you named it, the print is a mix of both. Short calls give weaker prints; it gets better as more calls of a person are remembered.

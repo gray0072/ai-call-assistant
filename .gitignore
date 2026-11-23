@@ -6,4 +6,5 @@ obj/
 # Created next to the exe at runtime
 models/
 settings.json
+voices.json
 *.log

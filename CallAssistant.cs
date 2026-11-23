@@ -277,7 +277,7 @@ sealed class CallAssistant : IDisposable
         try
         {
             var header = $"### {note.At:HH:mm:ss} — {note.Title} ({note.Model})";
-            File.AppendAllText(_session.NotesPath, $"{header}\n\n{note.Text.Trim()}\n\n", new UTF8Encoding(false));
+            _session.AppendNotes($"{header}\n\n{note.Text.Trim()}\n\n");
         }
         catch (Exception ex)
         {

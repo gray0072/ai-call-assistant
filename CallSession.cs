@@ -7,10 +7,14 @@ sealed record Utterance(TimeSpan Start, TimeSpan End, string Speaker, string Tex
 
 enum SessionState { Recording, Transcribing, Done, Failed }
 
+/// <summary>A voice in a call. <see cref="Recognized"/> — similarity, if the name was given by voice recognition.</summary>
+sealed record SpeakerInfo(string Key, string Label, string DefaultLabel, int Phrases, float? Recognized);
+
 /// <summary>
-/// Everything known about one call (or one transcribed file): the phrases, who said them and the names
-/// the user gave to the voices. The transcript file is always rendered from here, so renaming a speaker
-/// rewrites it. Thread-safe: phrases arrive from the recognition worker, names from the UI.
+/// Everything known about one call (or one transcribed file): the phrases, who said them, the names
+/// of the voices (typed by the user or recognized from known voices) and their voice prints.
+/// The transcript file is always rendered from here, so renaming a speaker rewrites it.
+/// Thread-safe: phrases arrive from the recognition worker, names from the UI.
 /// </summary>
 sealed class CallSession
 {
@@ -20,12 +24,25 @@ sealed class CallSession
     readonly object _sync = new();
     readonly List<Utterance> _lines = new();
     readonly Dictionary<string, string> _names = new();
+    readonly Dictionary<string, float> _recognized = new();                    // names given by recognition, with the score
+    readonly HashSet<string> _touched = new();                                 // voices the user named or cleared: recognition keeps off
+    readonly Dictionary<string, float[]> _prints = new();                      // voice prints of the accurate pass
+    readonly Dictionary<string, (float[] Sum, int Count)> _livePrints = new(); // sums of live phrase prints
     readonly Strings _text = Strings.Current; // default labels stay in the language the session started with
 
-    public string AudioPath { get; }
+    string _audioPath;
+    public string AudioPath
+    {
+        get { lock (_sync) return _audioPath; }
+    }
     public string TranscriptPath => Path.ChangeExtension(AudioPath, ".txt");
     public string NotesPath => Path.ChangeExtension(AudioPath, ".assistant.md");
+
+    /// <summary>A call recorded by the app (its files belong to the app), not a transcribed file.</summary>
     public bool IsRecording { get; }
+
+    /// <summary>Stable id of the call (the original file name), even if its files are moved.</summary>
+    public string Id { get; }
     public string? Project { get; set; }
 
     SessionState _state;
@@ -38,7 +55,7 @@ sealed class CallSession
     /// <summary>The lines are the live draft (true) or the accurate transcript made after the call (false).</summary>
     public bool IsDraft { get; private set; }
 
-    /// <summary>Lines replaced or names changed — redraw everything. Raised on any thread.</summary>
+    /// <summary>Lines replaced, names changed or files moved — redraw everything. Raised on any thread.</summary>
     public event Action? Changed;
 
     /// <summary>A draft phrase was appended. Raised on the recognition thread.</summary>
@@ -46,7 +63,8 @@ sealed class CallSession
 
     public CallSession(string audioPath, string? project, string? myName, bool isRecording)
     {
-        AudioPath = audioPath;
+        _audioPath = audioPath;
+        Id = Path.GetFileName(audioPath);
         Project = project;
         IsRecording = isRecording;
         IsDraft = isRecording;
@@ -66,14 +84,15 @@ sealed class CallSession
     }
 
     /// <summary>Speakers in order of their first phrase.</summary>
-    public List<(string Key, string Label, string DefaultLabel, int Phrases)> Speakers
+    public List<SpeakerInfo> Speakers
     {
         get
         {
             lock (_sync)
             {
                 return _lines.GroupBy(l => l.Speaker)
-                    .Select(g => (g.Key, Label(g.Key), DefaultLabel(g.Key), g.Count()))
+                    .Select(g => new SpeakerInfo(g.Key, Label(g.Key), DefaultLabel(g.Key), g.Count(),
+                        _recognized.TryGetValue(g.Key, out var score) ? score : null))
                     .ToList();
             }
         }
@@ -114,6 +133,70 @@ sealed class CallSession
         return string.Join("\n", picked);
     }
 
+    // ---------- names and voice prints ----------
+
+    /// <summary>True if the user typed a name for this voice (not given by recognition).</summary>
+    public bool IsNamedByUser(string key)
+    {
+        lock (_sync)
+            return _names.ContainsKey(key) && !_recognized.ContainsKey(key);
+    }
+
+    /// <summary>The name of a voice if it has one (typed or recognized).</summary>
+    public string? NameOf(string key)
+    {
+        lock (_sync)
+            return _names.TryGetValue(key, out var name) ? name : null;
+    }
+
+    /// <summary>Names already given in this call, except the one of <paramref name="exceptKey"/>.</summary>
+    public HashSet<string> UsedNames(string? exceptKey = null)
+    {
+        lock (_sync)
+            return new(_names.Where(n => n.Key != exceptKey).Select(n => n.Value), StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The best voice print of a voice: the accurate one, else the average of its live phrases.</summary>
+    public float[]? Print(string key)
+    {
+        lock (_sync)
+        {
+            if (_prints.TryGetValue(key, out var print))
+                return print;
+            if (!_livePrints.TryGetValue(key, out var live))
+                return null;
+            var average = (float[])live.Sum.Clone();
+            VoicePrint.Normalize(average);
+            return average;
+        }
+    }
+
+    /// <summary>Accurate voice prints of the voices of the call, by key.</summary>
+    public Dictionary<string, float[]> Prints
+    {
+        get { lock (_sync) return new(_prints); }
+    }
+
+    /// <summary>Adds the print of one live phrase; returns the voice's average so far and how many phrases it has.</summary>
+    public (float[] Average, int Phrases) AddLivePrint(string key, float[] print)
+    {
+        lock (_sync)
+        {
+            if (!_livePrints.TryGetValue(key, out var live))
+                live = (new float[print.Length], 0);
+            if (live.Sum.Length == print.Length)
+            {
+                for (int i = 0; i < print.Length; i++)
+                    live.Sum[i] += print[i];
+                live.Count++;
+            }
+            _livePrints[key] = live;
+            var average = (float[])live.Sum.Clone();
+            VoicePrint.Normalize(average);
+            return (average, live.Count);
+        }
+    }
+
     // ---------- changes ----------
 
     /// <summary>Appends a live draft phrase and writes it to the transcript file.</summary>
@@ -127,11 +210,44 @@ sealed class CallSession
         LineAdded?.Invoke(u);
     }
 
+    /// <summary>
+    /// Names a voice by voice recognition, unless the user has named it; <paramref name="name"/> null
+    /// takes back a name recognition gave. Returns true if the name changed.
+    /// </summary>
+    public bool SetRecognized(string key, string? name, float score)
+    {
+        lock (_sync)
+        {
+            if (_touched.Contains(key) || (_names.ContainsKey(key) && !_recognized.ContainsKey(key)))
+                return false; // what the user typed (or cleared) always wins
+            if (name == null)
+            {
+                if (!_recognized.Remove(key))
+                    return false;
+                _names.Remove(key);
+            }
+            else
+            {
+                bool same = _names.TryGetValue(key, out var current) && current == name;
+                _names[key] = name;
+                _recognized[key] = score;
+                if (same)
+                    return false;
+            }
+            if (_lines.Count > 0)
+                WriteFile();
+        }
+        Changed?.Invoke();
+        return true;
+    }
+
     /// <summary>Gives a voice a name (null or empty — back to "Speaker N") and rewrites the transcript.</summary>
     public void Rename(string key, string? name)
     {
         lock (_sync)
         {
+            _recognized.Remove(key);
+            _touched.Add(key);
             if (string.IsNullOrWhiteSpace(name) || name.Trim() == DefaultLabel(key))
                 _names.Remove(key);
             else
@@ -147,21 +263,27 @@ sealed class CallSession
     /// so each of its voices takes over the draft speaker it overlaps most in time — names given
     /// during the call stay with the right person.
     /// </summary>
-    public void AdoptFinal(List<Utterance> final)
+    public void AdoptFinal(TranscriptResult result)
     {
         lock (_sync)
         {
-            if (_lines.Count > 0)
-                final = MapToDraftSpeakers(final, _lines);
+            var final = result.Lines;
+            var map = _lines.Count > 0
+                ? MapToDraftSpeakers(final, _lines)
+                : final.Select(u => u.Speaker).Distinct().ToDictionary(k => k, k => k);
             _lines.Clear();
-            _lines.AddRange(final);
+            _lines.AddRange(final.Select(u => u with { Speaker = map[u.Speaker] }));
+            _prints.Clear();
+            foreach (var (key, print) in result.Prints)
+                _prints[map.TryGetValue(key, out var mapped) ? mapped : key] = print;
             IsDraft = false;
             WriteFile();
         }
         Changed?.Invoke();
     }
 
-    List<Utterance> MapToDraftSpeakers(List<Utterance> final, List<Utterance> draft)
+    /// <summary>Final speaker key → draft speaker key.</summary>
+    Dictionary<string, string> MapToDraftSpeakers(List<Utterance> final, List<Utterance> draft)
     {
         static bool Remote(string key) => key != MeKey;
 
@@ -199,8 +321,45 @@ sealed class CallSession
             map[key] = "#" + next;
             taken.Add(map[key]);
         }
+        return map;
+    }
 
-        return final.Select(u => u with { Speaker = map[u.Speaker] }).ToList();
+    /// <summary>Appends a note of the assistant to the notes file next to the recording.</summary>
+    public void AppendNotes(string text)
+    {
+        lock (_sync)
+            File.AppendAllText(NotesPath, text, Utf8);
+    }
+
+    /// <summary>
+    /// Moves the recording and the files next to it (transcript, assistant notes) to <paramref name="folder"/>.
+    /// Call only when nothing writes to them any more. Returns false if they are there already.
+    /// </summary>
+    public bool MoveTo(string folder)
+    {
+        lock (_sync)
+        {
+            var from = Path.GetDirectoryName(_audioPath)!;
+            if (string.Equals(Path.GetFullPath(from).TrimEnd('\\'), Path.GetFullPath(folder).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            Directory.CreateDirectory(folder);
+            var name = Path.GetFileNameWithoutExtension(_audioPath);
+            var extensions = new[] { Path.GetExtension(_audioPath), ".txt", ".assistant.md" };
+            var target = name;
+            for (int n = 2; extensions.Any(e => File.Exists(Path.Combine(folder, target + e))); n++)
+                target = $"{name} ({n})";
+
+            foreach (var ext in extensions)
+            {
+                var source = Path.Combine(from, name + ext);
+                if (File.Exists(source))
+                    File.Move(source, Path.Combine(folder, target + ext));
+            }
+            _audioPath = Path.Combine(folder, target + extensions[0]);
+        }
+        Changed?.Invoke();
+        return true;
     }
 
     void WriteFile()

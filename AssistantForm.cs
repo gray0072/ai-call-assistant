@@ -22,10 +22,11 @@ sealed class AssistantForm : Form
     // top bar
     readonly Label _projectLabel, _state;
     readonly ComboBox _project;
-    readonly Button _notes, _start, _pause, _stop;
+    readonly Button _notes, _projectFolder, _start, _pause, _stop;
 
     // participants
     readonly Label _participantsTitle, _participantsHint;
+    readonly Button _knownVoices;
     readonly DataGridView _people;
 
     // transcript
@@ -51,6 +52,7 @@ sealed class AssistantForm : Form
     bool _updatingProject;
     int _stableNotes, _stableEnd;   // notes drawn for good and where their text ends
     CallAssistant? _notesOwner;
+    Font? _italic;
 
     static Strings T => Strings.Current;
 
@@ -83,6 +85,7 @@ sealed class AssistantForm : Form
         };
         _project.Leave += (_, _) => CommitProject();
         _notes = Ui.Button("", (_, _) => EditProjectNotes());
+        _projectFolder = Ui.Button("", (_, _) => { CommitProject(); _app.OpenProjectFolder(); });
 
         _state = Ui.Label(bold: true);
         _state.Anchor = AnchorStyles.Right;
@@ -90,14 +93,13 @@ sealed class AssistantForm : Form
         _pause = Ui.Button("", (_, _) => _app.TogglePause());
         _stop = Ui.Button("", (_, _) => _app.Stop());
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 7, Padding = new Padding(8, 6, 8, 2) };
-        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var top = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 8, Padding = new Padding(8, 6, 8, 2) };
+        for (int i = 0; i < 4; i++)
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 3; i++)
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.Controls.AddRange(new Control[] { _projectLabel, _project, _notes, _state, _start, _pause, _stop });
+        top.Controls.AddRange(new Control[] { _projectLabel, _project, _notes, _projectFolder, _state, _start, _pause, _stop });
 
         // ---------- participants ----------
         _participantsTitle = Ui.Label(bold: true);
@@ -125,7 +127,24 @@ sealed class AssistantForm : Form
         _people.Columns.Add(new DataGridViewTextBoxColumn { Name = "Phrases", ReadOnly = true, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
         _people.CellEndEdit += (_, e) => OnNameEdited(e.RowIndex);
         _people.EditingControlShowing += (_, e) => OfferKnownNames(e.Control as TextBox);
+        _people.CellFormatting += (_, e) =>
+        {
+            // A name recognized by voice is shown in italics until the user confirms or changes it.
+            if (e.ColumnIndex == 1 && e.RowIndex >= 0 && _people.Rows[e.RowIndex].Cells[1].Tag is float score)
+            {
+                e.CellStyle!.Font = _italic ??= new Font(_people.Font, FontStyle.Italic);
+                e.CellStyle.ForeColor = Color.FromArgb(79, 70, 229);
+                _people.Rows[e.RowIndex].Cells[1].ToolTipText = T.RecognizedByVoice(score);
+            }
+            else if (e.ColumnIndex == 1 && e.RowIndex >= 0)
+            {
+                _people.Rows[e.RowIndex].Cells[1].ToolTipText = "";
+            }
+        };
+        _knownVoices = Ui.Button("", (_, _) => _app.ShowVoices(this));
         var participants = Column(_participantsTitle, _participantsHint, _people);
+        ((TableLayoutPanel)participants).RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        ((TableLayoutPanel)participants).Controls.Add(_knownVoices, 0, 3);
 
         // ---------- transcript ----------
         _transcriptTitle = Ui.Label(bold: true);
@@ -260,6 +279,8 @@ sealed class AssistantForm : Form
         Text = AppInfo.Name;
         _projectLabel.Text = T.Project;
         _notes.Text = T.ProjectNotes;
+        _projectFolder.Text = T.ProjectFolder;
+        _knownVoices.Text = T.KnownVoices;
         _start.Text = T.StartRecording;
         _stop.Text = T.Stop;
         _participantsTitle.Text = T.Participants;
@@ -487,7 +508,7 @@ sealed class AssistantForm : Form
             _people.Rows.RemoveAt(_people.Rows.Count - 1);
         for (int i = 0; i < speakers.Count; i++)
         {
-            var (key, label, defaultLabel, phrases) = speakers[i];
+            var (key, label, defaultLabel, phrases, recognized) = speakers[i];
             if (i == _people.Rows.Count)
                 _people.Rows.Add();
             var row = _people.Rows[i];
@@ -495,7 +516,9 @@ sealed class AssistantForm : Form
             row.Cells[0].Value = defaultLabel;
             row.Cells[0].Style.ForeColor = ColorOf(key, keys);
             row.Cells[1].Value = label == defaultLabel ? "" : label;
+            row.Cells[1].Tag = recognized;
             row.Cells[2].Value = phrases;
+            _people.InvalidateRow(i); // recognized names are styled in CellFormatting
         }
     }
 

@@ -76,6 +76,7 @@ sealed class Strings
     public required Func<string, string> ErrTranscription { get; init; }
     public required string ErrTranscriptFile { get; init; }
     public required string ErrAssistant { get; init; }
+    public required string ErrMoveFiles { get; init; }
     public required string ErrInternal { get; init; }
     public required Func<string, string, string> ErrCannotWrite { get; init; }
     public required Func<string, string, string> Fatal { get; init; }
@@ -85,23 +86,36 @@ sealed class Strings
     public required string AllFiles { get; init; }
     public required string PickFolderTitle { get; init; }
     public required string Cancel { get; init; }
+    public required string Close { get; init; }
 
     // ---------- main window ----------
     public required string Project { get; init; }
     public required string ProjectNotes { get; init; }
     public required Func<string, string> ProjectNotesTitle { get; init; }
     public required string ProjectNotesHint { get; init; }
+    public required string ProjectFolder { get; init; }
     public required string Participants { get; init; }
     public required string ParticipantsHint { get; init; }
     public required string ParticipantsEmpty { get; init; }
     public required string ColumnVoice { get; init; }
     public required string ColumnName { get; init; }
     public required string ColumnPhrases { get; init; }
+    public required string KnownVoices { get; init; }
+    public required Func<float, string> RecognizedByVoice { get; init; }
     public required string TranscriptTitle { get; init; }
     public required string NoCallYet { get; init; }
     public required string DraftNote { get; init; }
     public required string LiveOffHint { get; init; }
     public required string EnableLive { get; init; }
+
+    // ---------- known voices ----------
+    public required string VoicesTitle { get; init; }
+    public required string VoicesHint { get; init; }
+    public required string VoicesCalls { get; init; }
+    public required string VoicesLastHeard { get; init; }
+    public required string VoicesProjects { get; init; }
+    public required string VoicesForget { get; init; }
+    public required Func<string, string> VoicesForgetConfirm { get; init; }
 
     // ---------- assistant panel ----------
     public required string AiSettingsButton { get; init; }
@@ -230,6 +244,7 @@ sealed class Strings
         ErrTranscription = name => "Transcription of " + name,
         ErrTranscriptFile = "Transcript file",
         ErrAssistant = "AI assistant",
+        ErrMoveFiles = "Moving the call to the project folder",
         ErrInternal = "Internal error",
         ErrCannotWrite = (folder, msg) => $"Cannot write to {folder}: {msg}",
         Fatal = (msg, log) => $"{AppInfo.Name} is crashing:\n\n{msg}\n\nDetails in {log}",
@@ -239,22 +254,40 @@ sealed class Strings
         AllFiles = "All files",
         PickFolderTitle = "Where to save recordings and transcripts",
         Cancel = "Cancel",
+        Close = "Close",
 
         Project = "Project:",
         ProjectNotes = "Notes…",
         ProjectNotesTitle = name => $"Notes for “{name}”",
         ProjectNotesHint = "Background the assistant gets with every request: goals, terms, who is who.",
+        ProjectFolder = "Folder",
         Participants = "Participants",
-        ParticipantsHint = "Type a name next to a voice — the transcript and the assistant will use it.",
+        ParticipantsHint = "Type a name next to a voice — the transcript and the assistant will use it, and the voice will be recognized in the next calls.",
         ParticipantsEmpty = "Voices appear here as people speak.",
         ColumnVoice = "Voice",
         ColumnName = "Name",
         ColumnPhrases = "Phrases",
+        KnownVoices = "Known voices…",
+        RecognizedByVoice = s => $"Recognized by voice ({s:P0}). Type the name to confirm it, or another one to correct it.",
         TranscriptTitle = "Transcript",
         NoCallYet = "No call yet. Start recording, or transcribe a file from the tray menu.",
         DraftNote = "live draft — replaced by an accurate transcript after the call",
         LiveOffHint = "Live speech recognition is off: the transcript appears after the call.",
         EnableLive = "Turn on live recognition",
+
+        VoicesTitle = "Known voices",
+
+        VoicesHint = "Voices of the people you have named. In the next calls they are named automatically. Voice prints are stored only on this computer (voices.json next to the app).",
+
+        VoicesCalls = "Calls",
+
+        VoicesLastHeard = "Last heard",
+        VoicesProjects = "Projects",
+
+        VoicesForget = "Forget",
+
+        VoicesForgetConfirm = names => $"Forget the voice of {names}? They will no longer be recognized.",
+
 
         AiSettingsButton = "Settings…",
         AiNoModelChosen = "no model chosen",
@@ -382,6 +415,7 @@ sealed class Strings
         ErrTranscription = name => "Распознавание " + name,
         ErrTranscriptFile = "Файл расшифровки",
         ErrAssistant = "ИИ-ассистент",
+        ErrMoveFiles = "Перенос звонка в папку проекта",
         ErrInternal = "Внутренняя ошибка",
         ErrCannotWrite = (folder, msg) => $"Нельзя писать в {folder}: {msg}",
         Fatal = (msg, log) => $"{AppInfo.Name} аварийно завершается:\n\n{msg}\n\nПодробности в {log}",
@@ -391,22 +425,40 @@ sealed class Strings
         AllFiles = "Все файлы",
         PickFolderTitle = "Куда сохранять записи и расшифровки",
         Cancel = "Отмена",
+        Close = "Закрыть",
 
         Project = "Проект:",
         ProjectNotes = "Заметки…",
         ProjectNotesTitle = name => $"Заметки к «{name}»",
         ProjectNotesHint = "Контекст, который ассистент получает с каждым запросом: цели, термины, кто есть кто.",
+        ProjectFolder = "Папка",
         Participants = "Участники",
-        ParticipantsHint = "Впишите имя рядом с голосом — его будут использовать расшифровка и ассистент.",
+        ParticipantsHint = "Впишите имя рядом с голосом — его будут использовать расшифровка и ассистент, а голос будет узнаваться в следующих звонках.",
         ParticipantsEmpty = "Голоса появятся здесь, когда люди начнут говорить.",
         ColumnVoice = "Голос",
         ColumnName = "Имя",
         ColumnPhrases = "Фраз",
+        KnownVoices = "Знакомые голоса…",
+        RecognizedByVoice = s => $"Узнан по голосу ({s:P0}). Впишите имя, чтобы подтвердить, или другое, чтобы исправить.",
         TranscriptTitle = "Расшифровка",
         NoCallYet = "Звонка ещё не было. Начните запись или распознайте файл из меню в трее.",
         DraftNote = "черновик онлайн — после звонка заменяется точной расшифровкой",
         LiveOffHint = "Онлайн-распознавание выключено: расшифровка появится после звонка.",
         EnableLive = "Включить онлайн-распознавание",
+
+        VoicesTitle = "Знакомые голоса",
+
+        VoicesHint = "Голоса людей, которым вы дали имена. В следующих звонках они подписываются автоматически. Слепки голосов хранятся только на этом компьютере (voices.json рядом с приложением).",
+
+        VoicesCalls = "Звонков",
+
+        VoicesLastHeard = "Последний раз",
+        VoicesProjects = "Проекты",
+
+        VoicesForget = "Забыть",
+
+        VoicesForgetConfirm = names => $"Забыть голос: {names}? Его больше не будут узнавать.",
+
 
         AiSettingsButton = "Настройки…",
         AiNoModelChosen = "модель не выбрана",
@@ -534,6 +586,7 @@ sealed class Strings
         ErrTranscription = name => "Transkribering av " + name,
         ErrTranscriptFile = "Transkriptionsfil",
         ErrAssistant = "AI-assistent",
+        ErrMoveFiles = "Flytt av samtalet till projektmappen",
         ErrInternal = "Internt fel",
         ErrCannotWrite = (folder, msg) => $"Kan inte skriva till {folder}: {msg}",
         Fatal = (msg, log) => $"{AppInfo.Name} kraschar:\n\n{msg}\n\nDetaljer finns i {log}",
@@ -543,22 +596,40 @@ sealed class Strings
         AllFiles = "Alla filer",
         PickFolderTitle = "Var inspelningar och transkriptioner ska sparas",
         Cancel = "Avbryt",
+        Close = "Stäng",
 
         Project = "Projekt:",
         ProjectNotes = "Anteckningar…",
         ProjectNotesTitle = name => $"Anteckningar för ”{name}”",
         ProjectNotesHint = "Bakgrund som assistenten får med varje förfrågan: mål, begrepp, vem som är vem.",
+        ProjectFolder = "Mapp",
         Participants = "Deltagare",
-        ParticipantsHint = "Skriv ett namn bredvid en röst — transkriptionen och assistenten använder det.",
+        ParticipantsHint = "Skriv ett namn bredvid en röst — transkriptionen och assistenten använder det, och rösten känns igen i kommande samtal.",
         ParticipantsEmpty = "Rösterna visas här när folk börjar prata.",
         ColumnVoice = "Röst",
         ColumnName = "Namn",
         ColumnPhrases = "Fraser",
+        KnownVoices = "Kända röster…",
+        RecognizedByVoice = s => $"Igenkänd på rösten ({s:P0}). Skriv namnet för att bekräfta det, eller ett annat för att rätta.",
         TranscriptTitle = "Transkription",
         NoCallYet = "Inget samtal än. Starta en inspelning eller transkribera en fil från menyn i systemfältet.",
         DraftNote = "direktutkast — ersätts av en noggrann transkription efter samtalet",
         LiveOffHint = "Direkt taligenkänning är av: transkriptionen kommer efter samtalet.",
         EnableLive = "Slå på direkt taligenkänning",
+
+        VoicesTitle = "Kända röster",
+
+        VoicesHint = "Röster för de personer du har namngett. I kommande samtal får de namn automatiskt. Röstavtrycken sparas bara på den här datorn (voices.json bredvid appen).",
+
+        VoicesCalls = "Samtal",
+
+        VoicesLastHeard = "Senast hörd",
+        VoicesProjects = "Projekt",
+
+        VoicesForget = "Glöm",
+
+        VoicesForgetConfirm = names => $"Glömma rösten för {names}? Den känns inte längre igen.",
+
 
         AiSettingsButton = "Inställningar…",
         AiNoModelChosen = "ingen modell vald",

@@ -34,7 +34,7 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 - **R3.** Both sources are mixed into one file; the channels of the MP3 are not separated.
 - **R4.** MP3 96 kbps stereo (sample rate chosen by LAME, usually 32 kHz) — about 43 MB per hour.
 - **R5.** File name is the start time: `yyyy-MM-dd_HH-mm-ss.mp3`.
-- **R6.** Default folder `Documents\AI Call Assistant`, changed from the tray menu after checking the folder is writable; a project's recordings go to a subfolder named after it. A new folder applies from the next recording.
+- **R6.** Default folder `Documents\AI Call Assistant`, changed from the tray menu after checking the folder is writable; a project's recordings go to a subfolder named after it (§6). A new folder applies from the next recording.
 - **R7.** Start / Pause–Resume / Stop are available in the window and in the tray menu.
 - **R8.** On exit during a recording the file is closed properly first; if a transcript is not finished, the app asks for confirmation.
 - **R9.** A device disconnected during recording is recorded as silence, with a notification. A failure to write to disk stops the recording and keeps what was recorded. An unavailable device at start means no recording and an error.
@@ -84,9 +84,20 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 ## 6. Projects and participants
 
 - **P1.** A project has a name, optional notes (background for the assistant) and the names given to people in its calls. Projects are listed most recently used first.
-- **P2.** The project of a call is the one chosen when it starts; changing it during the call changes what the assistant is told, not where the file goes.
-- **P3.** A name typed for "Me" becomes the user's name for all calls. Other names are remembered in the project and offered (autocomplete) when naming voices in its next calls.
-- **P4.** Clearing a name returns the voice to its default label.
+- **P2.** Each project is a subfolder of the recordings folder (its name with characters invalid in file names replaced by `_`); calls without a project stay in the recordings folder itself. Subfolders found there (e.g. created in Explorer) are added as projects.
+- **P3.** A call is recorded into the folder of the project chosen when it starts. Changing the project of the current recorded call — during it or after — changes what the assistant is told and moves the recording, transcript and notes to the new project's folder as soon as nothing writes to them any more (after the accurate transcript, or at once if the call is finished). On a name clash the moved files get a " (2)" suffix. Transcribed files are never moved.
+- **P4.** A name typed for "Me" becomes the user's name for all calls. Other names are remembered in the project and offered (autocomplete) when naming voices in its next calls.
+- **P5.** Clearing a name returns the voice to its default label.
+
+### Known voices
+
+- **V1.** Naming a voice remembers its voice print (WeSpeaker embedding, normalized) under that name in `voices.json` next to the exe: one sample per person per call (keyed by the call's original file name, so renaming a voice in the same call replaces the sample), the latest 12 per person. Prints come from the accurate pass (length-weighted average of the voice's longest phrases nobody talks over, up to 30; all its phrases if there are none) — when the call's transcript is done, or at once when the name is typed after that. If the accurate pass failed, the average of the live phrase prints is used. "Me" is learned from the microphone track under the user's name.
+- **V2.** During a live call, each phrase of 2 s or more from the speakers adds to the voice's running average print, which is compared with the library; a person is named if similarity ≥ 0.82 and ≥ 0.06 above the second-best person. With 4 or more phrases and no match, an earlier recognized name is taken back.
+- **V3.** After the accurate pass, voices the user has not named are compared again using whole-call prints (≥ 0.80, same margin) and named, renamed or un-named accordingly; pairs are assigned best first, each person to at most one voice; names the user typed in the call are excluded.
+- **V4.** A voice the user has named or cleared in a call is never named by recognition again in that call. Clearing the name of a finished call removes that call's sample.
+- **V5.** Recognized names are shown in italics with the similarity in a tooltip; the transcript and the assistant use them like typed names.
+- **V6.** "Known voices…" lists people (name, number of calls, last heard, projects) and forgets selected ones after confirmation.
+- **V7.** Thresholds come from a 3.5-minute three-person call: same person across its halves 0.77–0.94, different people 0.57–0.76; with the halves as two calls, the two named people were recognized at 0.90 and 0.88 and the unknown one scored at most 0.74.
 
 ## 7. AI assistant
 
@@ -150,15 +161,14 @@ Main scenario: a group work call in English, Russian or Swedish, sometimes switc
 - Without headphones the microphone hears the speakers, so others' speech may appear again as "Me".
 - The live draft may split or merge voices; the accurate transcript fixes it.
 - Whisper sometimes assigns a mixed-language phrase to one language and translates part of it.
-- Voices are not recognized across calls — names are offered, not assigned automatically.
+- Voice recognition inherits the errors of voice separation: a voice merged from two people gives a mixed print. Voice prints are biometric data and stay on the machine.
 - The assistant has no web access (see §12).
 - No single-file publish (native libraries next to the exe), no installer, no autostart.
 
 ## 12. Possible next steps
 
-- Web search for the assistant: a `web_search` tool (OpenAI-style tool calling, supported by LM Studio and OpenRouter) implemented by the app with a search API, or OpenRouter's web plugin for cloud models, or an MCP search server through LM Studio's `/api/v1/chat` `integrations`.
+- Web search for the assistant (postponed): a `web_search` tool (OpenAI-style tool calling, supported by LM Studio and OpenRouter) implemented by the app with a search API, or OpenRouter's web plugin for cloud models, or an MCP search server through LM Studio's `/api/v1/chat` `integrations`.
 - Device selection and following the default device.
 - Echo cancellation of the speakers in the microphone signal, for calls without headphones.
-- Recognizing returning participants by stored voice prints.
 - Export of the transcript to Markdown / SRT; renaming voices of old transcripts.
 - Installer, autostart with Windows, releases on GitHub.

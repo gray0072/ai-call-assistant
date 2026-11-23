@@ -283,6 +283,48 @@ sealed class SpeechEngine : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Voice print of one speaker over a whole track: the normalized, length-weighted average of the
+    /// embeddings of their longest phrases. Null if no phrase is long enough.
+    /// </summary>
+    public static float[]? VoicePrintOf(float[] samples, IEnumerable<(float Start, float End)> segments)
+    {
+        var picked = segments
+            .Where(s => s.End - s.Start >= 1.0f)
+            .OrderByDescending(s => s.End - s.Start)
+            .Take(30)
+            .ToList();
+        if (picked.Count == 0)
+            return null;
+
+        using var extractor = CreateEmbeddingExtractor();
+        float[]? sum = null;
+        foreach (var (start, end) in picked)
+        {
+            int from = Math.Max(0, (int)(start * SampleRate));
+            int to = Math.Min(samples.Length, (int)(end * SampleRate));
+            if (to - from < SampleRate)
+                continue;
+
+            using var stream = extractor.CreateStream();
+            stream.AcceptWaveform(SampleRate, samples[from..to]);
+            stream.InputFinished();
+            if (!extractor.IsReady(stream))
+                continue;
+            var embedding = extractor.Compute(stream);
+            VoicePrint.Normalize(embedding);
+
+            float weight = Math.Min(end - start, 10f);
+            sum ??= new float[embedding.Length];
+            for (int i = 0; i < sum.Length; i++)
+                sum[i] += embedding[i] * weight;
+        }
+
+        if (sum != null)
+            VoicePrint.Normalize(sum);
+        return sum;
+    }
+
     public static SpeakerEmbeddingExtractor CreateEmbeddingExtractor()
     {
         var config = new SpeakerEmbeddingExtractorConfig();
