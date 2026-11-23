@@ -9,10 +9,14 @@ namespace SoundRecord;
 /// <summary>
 /// Owns the speech models: Whisper (speech → text, GPU via Vulkan with CPU fallback)
 /// and sherpa-onnx (voice activity, speaker diarization and speaker embeddings, CPU).
+/// Whisper is loaded only while someone holds a lease (<see cref="Use"/>) and is unloaded
+/// from video memory after <see cref="IdleTimeout"/> without leases.
 /// </summary>
 sealed class SpeechEngine : IDisposable
 {
     public const int SampleRate = 16000;
+    public const int VadWindow = 512;
+    static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(1);
     const float DiarizationThreshold = 0.4f;
     static readonly string[] Languages = { "ru", "en" };
     static readonly int Threads = Math.Max(2, Environment.ProcessorCount / 2);
@@ -32,19 +36,83 @@ sealed class SpeechEngine : IDisposable
     readonly SemaphoreSlim _whisperGate = new(1, 1);
     Task? _models, _loading;
     WhisperFactory? _factory;
-    volatile WhisperProcessor? _processor;
+    WhisperProcessor? _processor;
+    int _users;
+    System.Threading.Timer? _idleTimer;
 
-    /// <summary>Progress of model download/loading; null when idle.</summary>
-    public event Action<string?>? StatusChanged;
+    /// <summary>Model download/loading progress (text, fraction 0..1 or null when unknown); text is null when done.</summary>
+    public event Action<string?, double?>? StatusChanged;
 
-    public bool IsLoaded => _processor != null;
+    public bool ModelsReady => _models is { IsCompletedSuccessfully: true };
+
+    // ---------- lifetime ----------
+
+    /// <summary>Keeps Whisper loaded until the returned lease is disposed.</summary>
+    public IDisposable Use()
+    {
+        lock (_sync)
+        {
+            _users++;
+            _idleTimer?.Dispose();
+            _idleTimer = null;
+        }
+        return new Lease(this);
+    }
+
+    sealed class Lease(SpeechEngine engine) : IDisposable
+    {
+        int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+                engine.Release();
+        }
+    }
+
+    void Release()
+    {
+        lock (_sync)
+        {
+            if (--_users == 0)
+                _idleTimer = new System.Threading.Timer(_ => Unload(), null, IdleTimeout, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    void Unload()
+    {
+        WhisperProcessor? processor;
+        WhisperFactory? factory;
+        lock (_sync)
+        {
+            if (_users > 0)
+                return;
+            if (_loading is { IsCompleted: false })
+            {
+                // Still loading for a user who has already gone — try again later.
+                _idleTimer = new System.Threading.Timer(_ => Unload(), null, IdleTimeout, Timeout.InfiniteTimeSpan);
+                return;
+            }
+            processor = _processor;
+            factory = _factory;
+            _processor = null;
+            _factory = null;
+            _loading = null;
+        }
+
+        if (processor == null)
+            return;
+        processor.Dispose();
+        factory?.Dispose();
+        AppLog.Write("Whisper unloaded (idle)");
+    }
 
     public Task EnsureModelsAsync()
     {
         lock (_sync)
         {
             if (_models == null || _models.IsFaulted)
-                _models = Task.Run(() => ModelStore.DownloadMissingAsync(s => StatusChanged?.Invoke(s)));
+                _models = Task.Run(() => ModelStore.DownloadMissingAsync((s, f) => StatusChanged?.Invoke(s, f)));
             return _models;
         }
     }
@@ -64,24 +132,29 @@ sealed class SpeechEngine : IDisposable
         try
         {
             await EnsureModelsAsync();
-            StatusChanged?.Invoke("Загрузка модели распознавания…");
+            StatusChanged?.Invoke("Загрузка модели распознавания…", null);
 
             var gpu = VulkanGpu.FindDiscrete();
             AppLog.Write(gpu is { } g ? $"Whisper GPU: #{g.Index} {g.Name}" : "Whisper: no discrete GPU, using CPU");
             RuntimeOptions.RuntimeLibraryOrder = gpu != null
                 ? new List<RuntimeLibrary> { RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu }
                 : new List<RuntimeLibrary> { RuntimeLibrary.Cpu };
-            _factory = WhisperFactory.FromPath(ModelStore.Whisper, new WhisperFactoryOptions
+            var factory = WhisperFactory.FromPath(ModelStore.Whisper, new WhisperFactoryOptions
             {
                 UseGpu = gpu != null,
                 GpuDevice = gpu?.Index ?? 0
             });
-            _processor = _factory.CreateBuilder()
+            var processor = factory.CreateBuilder()
                 .WithLanguage("ru")
                 .WithNoContext()
                 .WithThreads(Threads)
                 .Build();
 
+            lock (_sync)
+            {
+                _factory = factory;
+                _processor = processor;
+            }
             AppLog.Write($"Whisper loaded, runtime: {RuntimeOptions.LoadedLibrary}");
         }
         catch (Exception ex)
@@ -91,11 +164,13 @@ sealed class SpeechEngine : IDisposable
         }
         finally
         {
-            StatusChanged?.Invoke(null);
+            StatusChanged?.Invoke(null, null);
         }
     }
 
-    /// <summary>Transcribes one utterance (16 kHz mono), picking Russian or English for it.</summary>
+    // ---------- recognition ----------
+
+    /// <summary>Transcribes one utterance (16 kHz mono), picking Russian or English for it. Hold a lease while calling.</summary>
     public async Task<string> TranscribeAsync(float[] samples, CancellationToken ct = default)
     {
         if (samples.Length < SampleRate * 0.3)
@@ -107,7 +182,7 @@ sealed class SpeechEngine : IDisposable
         await _whisperGate.WaitAsync(ct);
         try
         {
-            var processor = _processor!;
+            var processor = _processor ?? throw new InvalidOperationException("Модель распознавания выгружена.");
             var (language, _) = processor.DetectLanguageWithProbability(
                 audio.AsSpan(0, Math.Min(audio.Length, 30 * SampleRate)), Languages);
             processor.ChangeLanguage(string.IsNullOrEmpty(language) ? "ru" : language);
@@ -141,7 +216,7 @@ sealed class SpeechEngine : IDisposable
     }
 
     /// <summary>Who spoke when, over a whole recording (16 kHz mono). Speakers are numbered from 0.</summary>
-    public OfflineSpeakerDiarizationSegment[] Diarize(float[] samples, Action<int, int>? progress = null,
+    public static OfflineSpeakerDiarizationSegment[] Diarize(float[] samples, Action<int, int>? progress = null,
         float threshold = DiarizationThreshold)
     {
         var config = new OfflineSpeakerDiarizationConfig();
@@ -174,6 +249,40 @@ sealed class SpeechEngine : IDisposable
         }
     }
 
+    /// <summary>Speech segments (in seconds) of a whole single-speaker track.</summary>
+    public static List<(float Start, float End)> DetectSpeech(float[] samples)
+    {
+        var result = new List<(float, float)>();
+        var vad = CreateVad();
+        try
+        {
+            void Drain()
+            {
+                while (!vad.IsEmpty())
+                {
+                    var s = vad.Front();
+                    result.Add(((float)s.Start / SampleRate, (float)(s.Start + s.Samples.Length) / SampleRate));
+                    vad.Pop();
+                }
+            }
+
+            var window = new float[VadWindow];
+            for (int i = 0; i + VadWindow <= samples.Length; i += VadWindow)
+            {
+                Array.Copy(samples, i, window, 0, VadWindow);
+                vad.AcceptWaveform(window);
+                Drain();
+            }
+            vad.Flush();
+            Drain();
+        }
+        finally
+        {
+            vad.Dispose();
+        }
+        return result;
+    }
+
     public static SpeakerEmbeddingExtractor CreateEmbeddingExtractor()
     {
         var config = new SpeakerEmbeddingExtractorConfig();
@@ -198,12 +307,16 @@ sealed class SpeechEngine : IDisposable
         return new VoiceActivityDetector(config, 60);
     }
 
-    public const int VadWindow = 512;
-
     public void Dispose()
     {
-        _processor?.Dispose();
-        _factory?.Dispose();
+        lock (_sync)
+        {
+            _idleTimer?.Dispose();
+            _processor?.Dispose();
+            _factory?.Dispose();
+            _processor = null;
+            _factory = null;
+        }
     }
 }
 
@@ -215,4 +328,27 @@ static class Transcript
 
     public static string Line(TimeSpan at, string speaker, string text) =>
         $"[{(int)at.TotalHours:00}:{at:mm\\:ss}] {speaker}: {text}";
+}
+
+/// <summary>48 kHz → 16 kHz by averaging every three samples (good enough for speech models).</summary>
+sealed class Downsampler
+{
+    float _acc;
+    int _count;
+
+    /// <returns>Number of samples written to <paramref name="output"/> (needs count / 3 + 1 room).</returns>
+    public int Process(float[] input, int count, float[] output)
+    {
+        int written = 0;
+        for (int i = 0; i < count; i++)
+        {
+            _acc += input[i];
+            if (++_count < 3)
+                continue;
+            output[written++] = _acc / 3;
+            _acc = 0;
+            _count = 0;
+        }
+        return written;
+    }
 }

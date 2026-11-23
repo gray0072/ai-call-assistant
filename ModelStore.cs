@@ -25,7 +25,7 @@ static class ModelStore
 
     static string PathOf(Model m) => Path.Combine(Dir, m.FileName);
 
-    public static async Task DownloadMissingAsync(Action<string?> status)
+    public static async Task DownloadMissingAsync(Action<string?, double?> status)
     {
         var missing = All.Where(m => !File.Exists(PathOf(m))).ToList();
         if (missing.Count == 0)
@@ -60,8 +60,9 @@ static class ModelStore
                     {
                         lastPct = pct;
                         status(pct >= 0
-                            ? $"Скачивание {m.Title}: {pct}% из {total / 1048576} МБ"
-                            : $"Скачивание {m.Title}: {done / 1048576} МБ");
+                                ? $"Скачивание {m.Title}: {pct}% из {total / 1048576} МБ"
+                                : $"Скачивание {m.Title}: {done / 1048576} МБ",
+                            pct >= 0 ? pct / 100.0 : null);
                     }
                 }
             }
@@ -69,6 +70,6 @@ static class ModelStore
             File.Move(part, target, overwrite: true);
         }
 
-        status(null);
+        status(null, null);
     }
 }

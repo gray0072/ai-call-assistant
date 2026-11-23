@@ -4,8 +4,8 @@ using SherpaOnnx;
 namespace SoundRecord;
 
 /// <summary>
-/// Transcribes while recording. The microphone and the speakers are handled separately:
-/// microphone speech is labelled "Я", speaker output is split into speakers by voice embeddings.
+/// Draft transcript written while recording. The microphone and the speakers are handled separately:
+/// microphone speech is labelled "Я", speaker output is split into speakers by voice prints.
 /// Every recognized phrase is appended to the transcript file right away.
 /// </summary>
 sealed class LiveTranscriber
@@ -19,19 +19,18 @@ sealed class LiveTranscriber
 
     sealed record Job(AudioSource Source, long StartSample, float[] Samples);
 
-    /// <summary>Per-source state; touched only by the recorder pump thread (and by CompleteAsync after it stops).</summary>
+    /// <summary>Per-source state; touched only by the recorder thread (and by CompleteAsync after it stops).</summary>
     sealed class SourceState
     {
-        public float Acc;
-        public int AccCount;
+        public readonly Downsampler Down = new();
         public readonly float[] Window = new float[SpeechEngine.VadWindow];
         public int WindowFill;
-        public readonly List<float> Backlog = new(); // audio received before the VAD model is available
+        public readonly List<float> Backlog = new(); // audio received before the models are available
         public VoiceActivityDetector? Vad;
     }
 
     readonly SpeechEngine _engine;
-    readonly string _path;
+    readonly Action<string> _onError;
     readonly Dictionary<AudioSource, SourceState> _sources = new()
     {
         [AudioSource.Speakers] = new(),
@@ -39,33 +38,33 @@ sealed class LiveTranscriber
     };
     readonly Channel<Job> _jobs = Channel.CreateUnbounded<Job>(new() { SingleReader = true });
     readonly Task _worker;
+    float[] _down = new float[16000];
 
     SpeakerEmbeddingExtractor? _extractor;
     readonly List<(string Name, float[] Print)> _speakers = new(); // normalized voice print per speaker
     string? _lastRemote;
 
-    public string FilePath => _path;
+    public string FilePath { get; }
 
-    public LiveTranscriber(SpeechEngine engine, string transcriptPath)
+    public LiveTranscriber(SpeechEngine engine, string transcriptPath, Action<string> onError)
     {
         _engine = engine;
-        _path = transcriptPath;
+        _onError = onError;
+        FilePath = transcriptPath;
         _worker = Task.Run(WorkAsync);
     }
 
     /// <summary>Called by the recorder with 48 kHz mono audio of one source.</summary>
     public void Feed(AudioSource source, float[] mono48k, int count)
     {
+        if (_down.Length < count / 3 + 1)
+            _down = new float[count / 3 + 1];
+
         var s = _sources[source];
-        for (int i = 0; i < count; i++)
+        int n = s.Down.Process(mono48k, count, _down);
+        for (int i = 0; i < n; i++)
         {
-            // 48 kHz → 16 kHz: average every three samples.
-            s.Acc += mono48k[i];
-            if (++s.AccCount < 3)
-                continue;
-            s.Window[s.WindowFill++] = s.Acc / 3;
-            s.Acc = 0;
-            s.AccCount = 0;
+            s.Window[s.WindowFill++] = _down[i];
             if (s.WindowFill == s.Window.Length)
             {
                 SubmitWindow(source, s);
@@ -76,7 +75,7 @@ sealed class LiveTranscriber
 
     void SubmitWindow(AudioSource source, SourceState s)
     {
-        if (s.Vad == null && _engine.IsLoaded)
+        if (s.Vad == null && _engine.ModelsReady)
             StartVad(source, s);
 
         if (s.Vad == null)
@@ -118,7 +117,7 @@ sealed class LiveTranscriber
     {
         try
         {
-            await _engine.EnsureLoadedAsync();
+            await _engine.EnsureModelsAsync();
             foreach (var (source, s) in _sources)
             {
                 if (s.Vad == null)
@@ -141,9 +140,21 @@ sealed class LiveTranscriber
         }
     }
 
+    /// <summary>The recording did not start: stop the worker and remove the empty transcript.</summary>
+    public void Abandon()
+    {
+        _jobs.Writer.TryComplete();
+        _worker.ContinueWith(_ =>
+        {
+            try { File.Delete(FilePath); } catch { /* best effort */ }
+        });
+    }
+
     async Task WorkAsync()
     {
-        using var writer = Transcript.Create(_path);
+        // Whisper stays loaded for as long as the live session runs.
+        using var lease = _engine.Use();
+        using var writer = Transcript.Create(FilePath);
         try
         {
             await _engine.EnsureLoadedAsync();
@@ -151,8 +162,9 @@ sealed class LiveTranscriber
         }
         catch (Exception ex)
         {
-            AppLog.Write("Live transcription unavailable: " + ex.Message);
-            writer.WriteLine("(распознавание недоступно: " + ex.Message + ")");
+            AppLog.Write("Live transcription unavailable: " + ex);
+            _onError("Онлайн-распознавание недоступно: " + ex.GetBaseException().Message);
+            writer.WriteLine("(распознавание недоступно: " + ex.GetBaseException().Message + ")");
             await foreach (var _ in _jobs.Reader.ReadAllAsync()) { } // let the recorder keep going
             return;
         }
@@ -174,6 +186,7 @@ sealed class LiveTranscriber
                 catch (Exception ex)
                 {
                     AppLog.Write("Live transcription error: " + ex);
+                    _onError(ex.GetBaseException().Message);
                 }
             }
         }

@@ -25,9 +25,11 @@ sealed class CallRecorder : IDisposable
     readonly List<(AudioSource Kind, ISampleProvider Provider)> _sources = new();
     readonly LameMP3FileWriter _writer;
     readonly Thread _pump;
+    readonly Action<AudioSource, float[], int>? _tap;
+    readonly Action<string, bool> _onError;
     volatile bool _running = true;
     volatile bool _paused;
-    volatile Action<AudioSource, float[], int>? _tap;
+    bool _tapFailed;
     long _totalFrames;
 
     public string FilePath { get; }
@@ -37,19 +39,19 @@ sealed class CallRecorder : IDisposable
     /// <summary>Recorded duration, pauses excluded.</summary>
     public TimeSpan Duration => TimeSpan.FromSeconds((double)Interlocked.Read(ref _totalFrames) / SampleRate);
 
-    /// <summary>
+    /// <param name="tap">
     /// Receives exactly what goes into the file, per source, as 48 kHz mono
     /// (the buffer is reused — copy what you need). Called on the recorder thread.
-    /// </summary>
-    public Action<AudioSource, float[], int>? Tap
-    {
-        get => _tap;
-        set => _tap = value;
-    }
-
-    public CallRecorder(string filePath)
+    /// </param>
+    /// <param name="onError">
+    /// Problems during recording (message, fatal). Fatal means nothing more gets into the file.
+    /// Called on a background thread.
+    /// </param>
+    public CallRecorder(string filePath, Action<AudioSource, float[], int>? tap, Action<string, bool> onError)
     {
         FilePath = filePath;
+        _tap = tap;
+        _onError = onError;
         var warnings = new List<string>();
 
         TryAddSource(() => new WasapiLoopbackCapture(), AudioSource.Speakers, "выход (динамики)", warnings);
@@ -87,6 +89,12 @@ sealed class CallRecorder : IDisposable
             {
                 if (!_paused)
                     buffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            };
+            capture.RecordingStopped += (_, e) =>
+            {
+                // E.g. the headset was unplugged: this source goes silent, the rest keeps recording.
+                if (e.Exception != null && _running)
+                    _onError($"{name} перестал записываться: {e.Exception.Message}", false);
             };
 
             ISampleProvider sp = ToStereo(buffer.ToSampleProvider());
@@ -138,8 +146,6 @@ sealed class CallRecorder : IDisposable
         {
             int n = frames * Channels;
             Array.Clear(mix, 0, n);
-            var tap = _tap;
-
             foreach (var (kind, provider) in _sources)
             {
                 int read = provider.Read(source, 0, n);
@@ -149,12 +155,21 @@ sealed class CallRecorder : IDisposable
                 for (int i = 0; i < n; i++)
                     mix[i] += source[i];
 
-                if (tap != null)
+                if (_tap != null && !_tapFailed)
                 {
                     for (int f = 0; f < frames; f++)
                         mono[f] = (source[2 * f] + source[2 * f + 1]) * 0.5f;
-                    try { tap(kind, mono, frames); }
-                    catch (Exception ex) { AppLog.Write("Audio tap failed: " + ex); }
+                    try
+                    {
+                        _tap(kind, mono, frames);
+                    }
+                    catch (Exception ex)
+                    {
+                        // The MP3 keeps recording; only the transcription side is lost.
+                        _tapFailed = true;
+                        AppLog.Write("Audio tap failed: " + ex);
+                        _onError("Звук для распознавания больше не передаётся: " + ex.Message, false);
+                    }
                 }
             }
 
@@ -167,33 +182,43 @@ sealed class CallRecorder : IDisposable
             Interlocked.Add(ref _totalFrames, frames);
         }
 
-        while (_running)
+        try
         {
-            Thread.Sleep(50);
-
-            if (_paused)
+            while (_running)
             {
-                foreach (var b in _buffers)
-                    b.ClearBuffer();
-                clock.Restart();
-                written = 0;
-                continue;
+                Thread.Sleep(50);
+
+                if (_paused)
+                {
+                    foreach (var b in _buffers)
+                        b.ClearBuffer();
+                    clock.Restart();
+                    written = 0;
+                    continue;
+                }
+
+                // Pull audio at wall-clock pace, a bit behind real time so the buffers have data.
+                // Loopback capture delivers nothing during silence — the buffers fill the gaps with zeros.
+                long target = (long)((clock.Elapsed - Latency).TotalSeconds * SampleRate);
+                while (target - written > 0)
+                {
+                    int frames = (int)Math.Min(target - written, SampleRate);
+                    WriteFrames(frames);
+                    written += frames;
+                }
             }
 
-            // Pull audio at wall-clock pace, a bit behind real time so the buffers have data.
-            // Loopback capture delivers nothing during silence — the buffers fill the gaps with zeros.
-            long target = (long)((clock.Elapsed - Latency).TotalSeconds * SampleRate);
-            while (target - written > 0)
-            {
-                int frames = (int)Math.Min(target - written, SampleRate);
-                WriteFrames(frames);
-                written += frames;
-            }
+            // Captures are stopped by now: flush what is still buffered (the latency tail).
+            if (!_paused)
+                WriteFrames((int)(Latency.TotalSeconds * SampleRate));
         }
-
-        // Captures are stopped by now: flush what is still buffered (the latency tail).
-        if (!_paused)
-            WriteFrames((int)(Latency.TotalSeconds * SampleRate));
+        catch (Exception ex)
+        {
+            // E.g. the disk is full. An unhandled exception here would kill the whole app.
+            AppLog.Write("Recording failed: " + ex);
+            if (_running)
+                _onError("Запись остановлена: " + ex.Message, true);
+        }
     }
 
     public void Pause() => _paused = true;
@@ -213,12 +238,19 @@ sealed class CallRecorder : IDisposable
         _writer.Flush();
     }
 
+    /// <summary>Stops and finalizes the file; throws if the file could not be finished.</summary>
     public void Dispose()
     {
-        Stop();
-        _writer.Dispose();
-        foreach (var c in _captures)
-            c.Dispose();
+        try
+        {
+            Stop();
+            _writer.Dispose();
+        }
+        finally
+        {
+            foreach (var c in _captures)
+                c.Dispose();
+        }
     }
 
     /// <summary>Folds multichannel (e.g. 5.1) audio into stereo: front L/R plus center.</summary>

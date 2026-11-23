@@ -13,23 +13,31 @@ sealed class TrayApp : ApplicationContext
     readonly SynchronizationContext _ui;
 
     readonly NotifyIcon _tray;
-    readonly ToolStripMenuItem _status, _start, _pause, _stop;
+    readonly ToolStripMenuItem _error, _status, _start, _pause, _stop;
     readonly ToolStripMenuItem _modeLive, _modeAfter, _modeOff;
     readonly System.Windows.Forms.Timer _tick;
-    readonly Icon _iconIdle, _iconRec, _iconPaused;
+    readonly Dictionary<string, Icon> _icons = new();
 
     CallRecorder? _recorder;
     LiveTranscriber? _live;
+    CallTracks? _tracks;
     string? _lastFile;
-    string? _engineStatus, _jobStatus;
-    Task _transcriptions = Task.CompletedTask; // file transcriptions run one after another
+
+    (string Text, double? Fraction)? _engineStatus, _jobStatus;
+    Task _queue = Task.CompletedTask; // transcriptions run one after another
+    int _pending;
+    int _animation;
+
+    string? _errorText;
+    int _errorCount;
+    string? _lastBalloonKey;
+    DateTime _lastBalloonAt;
+    bool _balloonIsError;
 
     public TrayApp()
     {
-        _iconIdle = MakeIcon(Color.FromArgb(140, 140, 140));
-        _iconRec = MakeIcon(Color.FromArgb(220, 40, 40));
-        _iconPaused = MakeIcon(Color.FromArgb(240, 170, 0));
-
+        _error = new ToolStripMenuItem { Visible = false, ForeColor = Color.Firebrick };
+        _error.Click += (_, _) => OpenLogAndClearError();
         _status = new ToolStripMenuItem { Enabled = false, Visible = false };
         _start = new ToolStripMenuItem("Начать запись", null, (_, _) => Start());
         _pause = new ToolStripMenuItem("Пауза", null, (_, _) => TogglePause());
@@ -44,7 +52,7 @@ sealed class TrayApp : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(new ToolStripItem[]
         {
-            _status,
+            _error, _status,
             _start, _pause, _stop,
             new ToolStripSeparator(),
             modeMenu,
@@ -57,18 +65,33 @@ sealed class TrayApp : ApplicationContext
 
         // Creating the menu installs the WinForms synchronization context on this thread.
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-        _engine.StatusChanged += s => _ui.Post(_ => { _engineStatus = s; UpdateUi(); }, null);
+        _engine.StatusChanged += (text, fraction) => OnUi(() =>
+        {
+            _engineStatus = text == null ? null : (text, fraction);
+            UpdateUi();
+        });
 
         _tray = new NotifyIcon { ContextMenuStrip = menu, Visible = true };
         _tray.DoubleClick += (_, _) => OpenFolder();
-        _tray.BalloonTipClicked += (_, _) => OpenFolder();
+        _tray.BalloonTipClicked += (_, _) =>
+        {
+            if (_balloonIsError) OpenLogAndClearError();
+            else OpenFolder();
+        };
 
-        _tick = new System.Windows.Forms.Timer { Interval = 1000 };
-        _tick.Tick += (_, _) => UpdateUi();
+        _tick = new System.Windows.Forms.Timer { Interval = 400 };
+        _tick.Tick += (_, _) =>
+        {
+            _animation++;
+            UpdateUi();
+        };
 
-        PrepareEngine();
+        CallTracks.DeleteLeftovers();
+        PrepareModels();
         UpdateUi();
     }
+
+    void OnUi(Action action) => _ui.Post(_ => action(), null);
 
     // ---------- recording ----------
 
@@ -78,27 +101,47 @@ sealed class TrayApp : ApplicationContext
             return;
 
         var file = Path.Combine(_folder, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
+        var mode = _settings.Transcription;
+        CallTracks? tracks = null;
+        LiveTranscriber? live = null;
         try
         {
-            _recorder = new CallRecorder(file);
+            if (mode != TranscriptionMode.Off)
+                tracks = new CallTracks(Path.GetFileNameWithoutExtension(file));
+            if (mode == TranscriptionMode.Live)
+                live = new LiveTranscriber(_engine, Path.ChangeExtension(file, ".txt"),
+                    message => OnUi(() => ReportError("Онлайн-распознавание", message)));
+
+            Action<AudioSource, float[], int>? tap = tracks == null ? null : (source, audio, count) =>
+            {
+                tracks.Feed(source, audio, count);
+                live?.Feed(source, audio, count);
+            };
+
+            _recorder = new CallRecorder(file, tap, (message, fatal) => OnUi(() => OnRecorderError(message, fatal)));
         }
         catch (Exception ex)
         {
-            _tray.ShowBalloonTip(5000, "Не удалось начать запись", ex.Message, ToolTipIcon.Error);
+            live?.Abandon();
+            tracks?.Delete();
+            ReportError("Не удалось начать запись", ex.Message);
             return;
         }
 
-        if (_settings.Transcription == TranscriptionMode.Live)
-        {
-            _live = new LiveTranscriber(_engine, Path.ChangeExtension(file, ".txt"));
-            _recorder.Tap = _live.Feed;
-        }
+        _tracks = tracks;
+        _live = live;
 
         if (_recorder.Warnings.Count > 0)
-            _tray.ShowBalloonTip(5000, "Запись начата частично", string.Join("\n", _recorder.Warnings), ToolTipIcon.Warning);
+            ReportError("Запись начата частично", string.Join("\n", _recorder.Warnings));
 
-        _tick.Start();
         UpdateUi();
+    }
+
+    void OnRecorderError(string message, bool fatal)
+    {
+        ReportError("Запись", message);
+        if (fatal)
+            Stop();
     }
 
     void TogglePause()
@@ -116,29 +159,46 @@ sealed class TrayApp : ApplicationContext
         if (_recorder == null)
             return;
 
-        _tick.Stop();
-        var file = _recorder.FilePath;
-        _recorder.Dispose();
-        _recorder = null;
-        _lastFile = file;
-
+        var recorder = _recorder;
+        var tracks = _tracks;
         var live = _live;
+        _recorder = null;
+        _tracks = null;
         _live = null;
 
-        _tray.ShowBalloonTip(3000, "Запись сохранена", Path.GetFileName(file), ToolTipIcon.Info);
+        bool saved = true;
+        try
+        {
+            recorder.Dispose();
+        }
+        catch (Exception ex)
+        {
+            saved = false;
+            AppLog.Write("Saving recording failed: " + ex);
+            ReportError("Запись", "Не удалось сохранить файл: " + ex.Message);
+        }
+
+        try
+        {
+            tracks?.Close();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Saving tracks failed: " + ex);
+            tracks?.Delete();
+            tracks = null;
+        }
+
+        _lastFile = recorder.FilePath;
+        if (saved)
+            ShowBalloon("Запись сохранена", Path.GetFileName(recorder.FilePath), ToolTipIcon.Info);
+
+        if (live != null || (saved && _settings.Transcription == TranscriptionMode.AfterRecording))
+            Enqueue(recorder.FilePath, tracks, live);
+        else
+            tracks?.Delete();
+
         UpdateUi();
-
-        if (live != null)
-            Track(Path.GetFileName(file), () => FinishLive(live));
-        else if (_settings.Transcription == TranscriptionMode.AfterRecording)
-            EnqueueFile(file);
-    }
-
-    async Task<string> FinishLive(LiveTranscriber live)
-    {
-        SetJobStatus("Дописываю расшифровку…");
-        await live.CompleteAsync();
-        return live.FilePath;
     }
 
     // ---------- transcription ----------
@@ -147,21 +207,18 @@ sealed class TrayApp : ApplicationContext
     {
         _settings.Transcription = mode;
         _settings.Save();
-        PrepareEngine();
+        PrepareModels();
         UpdateUi();
     }
 
-    /// <summary>Downloads the models in advance; for live mode also loads Whisper so the first phrase is not delayed.</summary>
-    void PrepareEngine()
+    /// <summary>Downloads missing models in advance. Whisper itself is loaded only when needed.</summary>
+    void PrepareModels()
     {
-        var mode = _settings.Transcription;
-        if (mode == TranscriptionMode.Off)
+        if (_settings.Transcription == TranscriptionMode.Off)
             return;
 
-        var task = mode == TranscriptionMode.Live ? _engine.EnsureLoadedAsync() : _engine.EnsureModelsAsync();
-        task.ContinueWith(t => _ui.Post(_ =>
-            _tray.ShowBalloonTip(5000, "Модели распознавания недоступны",
-                t.Exception!.GetBaseException().Message, ToolTipIcon.Error), null),
+        _engine.EnsureModelsAsync().ContinueWith(
+            t => OnUi(() => ReportError("Модели распознавания", t.Exception!.GetBaseException().Message)),
             TaskContinuationOptions.OnlyOnFaulted);
     }
 
@@ -174,45 +231,101 @@ sealed class TrayApp : ApplicationContext
             InitialDirectory = Directory.Exists(_folder) ? _folder : null
         };
         if (dialog.ShowDialog() == DialogResult.OK)
-            EnqueueFile(dialog.FileName);
+            Enqueue(dialog.FileName, null, null);
     }
 
-    void EnqueueFile(string audioPath)
+    /// <summary>
+    /// Queues an accurate transcription. For a live session its draft is finished first
+    /// and then replaced by the accurate version.
+    /// </summary>
+    void Enqueue(string audioPath, CallTracks? tracks, LiveTranscriber? live)
     {
         var name = Path.GetFileName(audioPath);
-        var previous = _transcriptions;
-        _transcriptions = Track(name, async () =>
+        var previous = _queue;
+        _pending++;
+        UpdateUi();
+
+        _queue = Task.Run(async () =>
         {
-            await previous;
-            return await FileTranscriber.RunAsync(_engine, audioPath, SetJobStatus);
+            try
+            {
+                if (live != null)
+                {
+                    SetJobStatus($"{name}: дописываю черновик", null);
+                    await live.CompleteAsync();
+                }
+
+                await previous;
+                var transcript = await FileTranscriber.RunAsync(_engine, audioPath,
+                    (stage, fraction) => SetJobStatus($"{name}: {stage}", fraction), tracks);
+
+                OnUi(() =>
+                {
+                    _lastFile = transcript;
+                    ShowBalloon("Расшифровка готова", Path.GetFileName(transcript), ToolTipIcon.Info);
+                });
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"Transcription of {name} failed: {ex}");
+                OnUi(() => ReportError("Распознавание " + name, ex.GetBaseException().Message));
+            }
+            finally
+            {
+                tracks?.Delete();
+                OnUi(() =>
+                {
+                    _pending--;
+                    _jobStatus = null;
+                    UpdateUi();
+                });
+            }
         });
     }
 
-    /// <summary>Runs a transcription in the background and reports its result in the tray.</summary>
-    Task Track(string name, Func<Task<string>> work) => Task.Run(async () =>
+    void SetJobStatus(string text, double? fraction) => OnUi(() =>
     {
-        try
-        {
-            var transcript = await work();
-            _ui.Post(_ =>
-            {
-                _lastFile = transcript;
-                _tray.ShowBalloonTip(3000, "Расшифровка готова", Path.GetFileName(transcript), ToolTipIcon.Info);
-            }, null);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Write($"Transcription of {name} failed: {ex}");
-            _ui.Post(_ => _tray.ShowBalloonTip(5000, "Ошибка распознавания",
-                $"{name}: {ex.GetBaseException().Message}", ToolTipIcon.Error), null);
-        }
-        finally
-        {
-            SetJobStatus(null);
-        }
+        _jobStatus = (text, fraction);
+        UpdateUi();
     });
 
-    void SetJobStatus(string? status) => _ui.Post(_ => { _jobStatus = status; UpdateUi(); }, null);
+    // ---------- errors ----------
+
+    /// <summary>Shows an error until the user looks at it: balloon, red badge on the icon and a menu item.</summary>
+    public void ReportError(string title, string message)
+    {
+        AppLog.Write($"ERROR {title}: {message}");
+        _errorText = $"{title}: {message}";
+        _errorCount++;
+
+        // Don't flood with balloons when the same error repeats.
+        var key = _errorText;
+        if (key != _lastBalloonKey || DateTime.Now - _lastBalloonAt > TimeSpan.FromMinutes(1))
+        {
+            _lastBalloonKey = key;
+            _lastBalloonAt = DateTime.Now;
+            ShowBalloon(title, message, ToolTipIcon.Error);
+        }
+        UpdateUi();
+    }
+
+    /// <summary>Thread-safe <see cref="ReportError"/>.</summary>
+    public void PostError(string title, string message) => OnUi(() => ReportError(title, message));
+
+    void OpenLogAndClearError()
+    {
+        _errorText = null;
+        _errorCount = 0;
+        UpdateUi();
+        if (File.Exists(AppLog.FilePath))
+            Process.Start(new ProcessStartInfo(AppLog.FilePath) { UseShellExecute = true });
+    }
+
+    void ShowBalloon(string title, string text, ToolTipIcon icon)
+    {
+        _balloonIsError = icon == ToolTipIcon.Error;
+        _tray.ShowBalloonTip(5000, title, text.Length > 250 ? text[..250] + "…" : text, icon);
+    }
 
     // ---------- misc ----------
 
@@ -227,21 +340,27 @@ sealed class TrayApp : ApplicationContext
 
     void Exit()
     {
+        if (_pending > 0 && MessageBox.Show(
+                "Расшифровка ещё не готова и будет прервана. Выйти?", "Sound Record",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
         if (_recorder != null)
         {
-            _tick.Stop();
-            _recorder.Dispose();
+            try { _recorder.Dispose(); }
+            catch (Exception ex) { AppLog.Write("Saving recording on exit failed: " + ex); }
             _recorder = null;
         }
 
         if (_live != null)
         {
-            // Give the last phrases a chance to reach the transcript.
+            // Let the draft get its last phrases.
             var live = _live;
             _live = null;
             try { Task.Run(live.CompleteAsync).Wait(TimeSpan.FromSeconds(30)); }
             catch (Exception ex) { AppLog.Write("Live transcription on exit: " + ex.Message); }
         }
+        _tracks?.Delete();
 
         _tray.Visible = false;
         ExitThread();
@@ -261,38 +380,108 @@ sealed class TrayApp : ApplicationContext
         _modeAfter.Checked = _settings.Transcription == TranscriptionMode.AfterRecording;
         _modeOff.Checked = _settings.Transcription == TranscriptionMode.Off;
 
-        var status = _engineStatus ?? _jobStatus;
-        _status.Visible = status != null;
-        _status.Text = status ?? "";
+        // What is being processed: model download/loading has priority over the job stage.
+        var work = _engineStatus ?? _jobStatus ?? (_pending > 0 ? ("Распознавание в очереди", null) : null);
+        string? workText = null;
+        if (work is { } w)
+        {
+            workText = w.Fraction is { } f ? $"{w.Text} — {f:P0}" : w.Text;
+            if (_pending > 1)
+                workText += $" (ещё в очереди: {_pending - 1})";
+        }
+        _status.Visible = workText != null;
+        _status.Text = workText ?? "";
+
+        _error.Visible = _errorText != null;
+        _error.Text = _errorText == null ? "" :
+            "⚠ " + Shorten(_errorText, 70) + (_errorCount > 1 ? $" (ошибок: {_errorCount})" : "") + " — открыть лог";
+        _error.ToolTipText = _errorText;
 
         string state;
+        Color color;
         if (!active)
         {
-            _tray.Icon = _iconIdle;
             state = "ожидание";
+            color = Color.FromArgb(140, 140, 140);
         }
         else
         {
             var d = _recorder!.Duration;
-            _tray.Icon = paused ? _iconPaused : _iconRec;
             state = $"{(paused ? "пауза" : "запись")} {(int)d.TotalHours:00}:{d:mm\\:ss}";
+            color = paused ? Color.FromArgb(240, 170, 0) : Color.FromArgb(220, 40, 40);
         }
 
-        var text = $"Sound Record — {state}" + (status != null ? "\n" + status : "");
-        _tray.Text = text.Length > 127 ? text[..127] : text;
+        _tray.Icon = GetIcon(color, work?.Fraction, work != null, _errorText != null);
+
+        var tip = $"Sound Record — {state}";
+        if (workText != null)
+            tip += "\n" + workText;
+        if (_errorText != null)
+            tip += "\n⚠ ошибка — см. меню";
+        _tray.Text = Shorten(tip, 127);
+
+        // The timer drives the duration counter and the spinner.
+        _tick.Enabled = active || work != null;
     }
 
-    static Icon MakeIcon(Color color)
+    static string Shorten(string s, int max) => s.Length > max ? s[..(max - 1)] + "…" : s;
+
+    // ---------- icon ----------
+
+    Icon GetIcon(Color color, double? fraction, bool busy, bool error)
+    {
+        // Progress rounded to 5% so only a few dozen icons are ever drawn; unknown progress spins.
+        string ring = !busy ? "-" : fraction is { } f ? $"p{(int)(f * 20)}" : $"s{_animation % 8}";
+        var key = $"{color.ToArgb()}|{ring}|{error}";
+        if (!_icons.TryGetValue(key, out var icon))
+            _icons[key] = icon = DrawIcon(color, busy, fraction, _animation % 8, error);
+        return icon;
+    }
+
+    static Icon DrawIcon(Color color, bool busy, double? fraction, int spinPhase, bool error)
     {
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
-            using var brush = new SolidBrush(color);
-            g.FillEllipse(brush, 3, 3, 26, 26);
-            using var pen = new Pen(Color.White, 2.5f);
-            g.DrawEllipse(pen, 3, 3, 26, 26);
+
+            using var fill = new SolidBrush(color);
+            if (busy)
+            {
+                // Smaller dot inside a progress ring.
+                g.FillEllipse(fill, 9, 9, 14, 14);
+                using var track = new Pen(Color.FromArgb(110, 128, 128, 128), 5);
+                g.DrawEllipse(track, 3.5f, 3.5f, 25, 25);
+                using var progress = new Pen(Color.FromArgb(0, 120, 215), 5);
+                if (fraction is { } f)
+                {
+                    if (f > 0)
+                        g.DrawArc(progress, 3.5f, 3.5f, 25, 25, -90, (float)(360 * Math.Min(f, 1)));
+                }
+                else
+                {
+                    g.DrawArc(progress, 3.5f, 3.5f, 25, 25, -90 + spinPhase * 45, 100);
+                }
+            }
+            else
+            {
+                g.FillEllipse(fill, 3, 3, 26, 26);
+                using var pen = new Pen(Color.White, 2.5f);
+                g.DrawEllipse(pen, 3, 3, 26, 26);
+            }
+
+            if (error)
+            {
+                // Red badge with "!" in the bottom-right corner.
+                using var badge = new SolidBrush(Color.FromArgb(220, 20, 20));
+                using var border = new Pen(Color.White, 1.5f);
+                g.FillEllipse(badge, 17, 17, 14, 14);
+                g.DrawEllipse(border, 17, 17, 14, 14);
+                using var white = new SolidBrush(Color.White);
+                g.FillRectangle(white, 23, 19.5f, 2, 6);
+                g.FillRectangle(white, 23, 26.5f, 2, 2);
+            }
         }
         return Icon.FromHandle(bmp.GetHicon());
     }

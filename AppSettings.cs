@@ -46,7 +46,7 @@ sealed class AppSettings
 
 static class AppLog
 {
-    static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "SoundRecord.log");
+    public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "SoundRecord.log");
     static readonly object Sync = new();
 
     public static void Write(string message)
